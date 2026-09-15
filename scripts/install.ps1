@@ -5,7 +5,7 @@
 # Uses uv for fast Python provisioning and package management.
 #
 # Usage:
-#   iex (irm https://raw.githubusercontent.com/Mochi-Sora/Mason-Agent/main/scripts/install.ps1)
+#   iex (irm https://raw.githubusercontent.com/Mochi-Sora/Mason-Agent/MasonAgent/scripts/install.ps1)
 #
 # Or download and run with options:
 #   .\install.ps1 -NoVenv -SkipSetup
@@ -16,7 +16,12 @@ param(
     [switch]$NoVenv,
     [switch]$SkipSetup,
     [switch]$SkipComputerUse,
-    [string]$Branch = "main",
+    # Empty means "the repository's default branch", resolved from the remote
+    # at install time (see Resolve-DefaultBranch).  Do not hardcode a name here:
+    # after a rename, `git clone --branch <old-name>` fails with "Remote branch
+    # <old-name> not found" even while the raw.githubusercontent URL for that
+    # old name still serves bytes.
+    [string]$Branch = "",
     # -Commit and -Tag are higher-precedence variants of -Branch for users
     # who need reproducible installs (desktop installer pinning, CI, release
     # bundles).  When set, the repository stage clones $Branch (faster than
@@ -2132,8 +2137,72 @@ function Install-SystemPackages {
 # Installation
 # ============================================================================
 
+function Resolve-DefaultBranch {
+    # The branch installed when the caller did not pass -Branch: asked of the
+    # remote itself, so renaming the repository's default branch can never
+    # strand an install on a ref nobody serves.
+    #
+    # Order matters. The remote's symref is the only authoritative source.
+    # refs/remotes/origin/HEAD is written once at clone time and survives a
+    # rename, so a clone made while the default was "main" still reports
+    # origin/main long after that ref stopped existing -- which is exactly the
+    # stale answer that makes an update fetch a branch nobody serves. It is
+    # therefore only the fallback, never the primary.
+    param([string]$RepoUrl = $RepoUrlHttps)
+
+    $resolved = ""
+    $prevEAP = $ErrorActionPreference
+    # git emits routine progress on stderr; under the script's global EAP=Stop
+    # that would terminate the run, so rely on $LASTEXITCODE instead.
+    $ErrorActionPreference = "Continue"
+    try {
+        if ($RepoUrl) {
+            # Preferred form: "ref: refs/heads/<name>\tHEAD".
+            $symref = @(& git ls-remote --symref $RepoUrl HEAD 2>$null)
+            if ($LASTEXITCODE -eq 0 -and $symref) {
+                $match = [regex]::Match(($symref -join "`n"), "ref:\s+refs/heads/([^\s]+)\s+HEAD")
+                if ($match.Success) {
+                    $resolved = $match.Groups[1].Value
+                } elseif (("$($symref[0])").Trim() -match "^([0-9a-fA-F]{7,40})\s") {
+                    # Some servers omit the symref -- match HEAD's SHA to a head.
+                    $headSha = $Matches[1]
+                    $hit = @(& git ls-remote --heads $RepoUrl 2>$null) |
+                        Where-Object { $_ -match ("^" + [regex]::Escape($headSha) + "\s+refs/heads/") } |
+                        Select-Object -First 1
+                    if ($hit) { $resolved = (($hit -split "\s+")[1] -replace "^refs/heads/", "") }
+                }
+            }
+        }
+
+        if (-not $resolved -and (Test-Path (Join-Path $InstallDir ".git"))) {
+            $head = & git -C $InstallDir symbolic-ref --short refs/remotes/origin/HEAD 2>$null
+            if ($LASTEXITCODE -eq 0 -and $head) {
+                $resolved = ("$head").Trim() -replace "^origin/", ""
+            }
+        }
+    } catch {
+        # Ignore -- any failure means "ask the next source down the list".
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
+
+    if (-not $resolved) { $resolved = $env:MASON_DEFAULT_BRANCH }
+    if (-not $resolved) { $resolved = "MasonAgent" }
+    return $resolved
+}
+
 function Install-Repository {
     Write-Info "Installing to $InstallDir..."
+
+    # Resolve before anything interpolates $Branch: the update path fetches it,
+    # the clone path passes it to --branch, the ZIP fallback builds a URL from
+    # it, and Write-BootstrapMarker records it. $script: -- a bare $Branch
+    # assignment here would create a function-local copy and leave the rest of
+    # the script looking at the empty parameter.
+    if (-not $Branch) {
+        $script:Branch = Resolve-DefaultBranch
+        Write-Info "Using repository default branch: $script:Branch"
+    }
 
     $didUpdate = $false
 
@@ -3284,6 +3353,14 @@ function Write-BootstrapMarker {
         return
     }
 
+    if (-not $Branch) {
+        # Install-Repository resolves $Branch; an empty value here means the
+        # repository stage never ran. An absent marker is a clean "bootstrap
+        # needed", while "pinnedBranch": "" is a marker the desktop rejects.
+        Write-Warn "Skipping bootstrap marker: branch could not be resolved"
+        return
+    }
+
     # Resolve the pinned commit: explicit -Commit wins, otherwise read
     # the checkout's HEAD via git. If git can't run, leave commit empty
     # and the marker will fail desktop validation (pinnedCommit.length
@@ -3310,10 +3387,10 @@ function Write-BootstrapMarker {
         }
     }
 
+    # Non-empty: Write-BootstrapMarker returns early when $Branch is empty, and
+    # Install-Repository resolves it, so a marker is only ever written with a
+    # real branch name.
     $pinnedBranch = $Branch
-    if (-not $pinnedBranch) {
-        $pinnedBranch = "main"  # install.ps1's own default for -Branch
-    }
 
     $markerPath = Join-Path $InstallDir ".mason-bootstrap-complete"
     $marker = [ordered]@{
@@ -4191,7 +4268,9 @@ function Install-Desktop {
         }
     }
     if (-not $env:GITHUB_REF_NAME) {
-        $env:GITHUB_REF_NAME = if ($Branch) { $Branch } else { "main" }
+        # $Branch is resolved by Install-Repository; ask the remote only if this
+        # path ran without it (stage-protocol callers that skip that stage).
+        $env:GITHUB_REF_NAME = if ($Branch) { $Branch } else { Resolve-DefaultBranch }
     }
     if ($env:GITHUB_SHA) {
         $shaPreview = if ($env:GITHUB_SHA.Length -ge 12) { $env:GITHUB_SHA.Substring(0, 12) } else { $env:GITHUB_SHA }
@@ -5061,7 +5140,7 @@ try {
     Write-Err "Installation failed: $_"
     Write-Host ""
     Write-Info "If the error is unclear, try downloading and running the script directly:"
-    Write-Host "  Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/Mochi-Sora/Mason-Agent/main/scripts/install.ps1' -OutFile install.ps1" -ForegroundColor Yellow
+    Write-Host "  Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/Mochi-Sora/Mason-Agent/MasonAgent/scripts/install.ps1' -OutFile install.ps1" -ForegroundColor Yellow
     Write-Host "  .\install.ps1" -ForegroundColor Yellow
     Write-Host ""
 }

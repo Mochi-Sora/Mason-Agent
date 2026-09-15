@@ -6,7 +6,7 @@
 # Uses uv for desktop/server installs and Python's stdlib venv + pip on Termux.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/Mochi-Sora/Mason-Agent/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Mochi-Sora/Mason-Agent/MasonAgent/scripts/install.sh | bash
 #
 # Or with options:
 #   curl -fsSL ... | bash -s -- --no-venv --skip-setup
@@ -73,7 +73,13 @@ RUN_SETUP=true
 SKIP_BROWSER=false
 SKIP_COMPUTER_USE=false
 NO_SKILLS=false
-BRANCH="main"
+# Empty means "the repository's default branch", resolved from the remote at
+# install time (see resolve_default_branch). Do not hardcode a branch name
+# here: after a rename, raw.githubusercontent keeps serving the old /main/
+# path -- GitHub aliases it to the default branch, and a genuinely bogus ref
+# 404s, so the download still works -- while `git clone --branch main` and
+# `git fetch origin main` fail with "Remote branch main not found".
+BRANCH=""
 INSTALL_COMMIT=""
 FORCE_COMMIT=false
 ENSURE_DEPS=""
@@ -175,7 +181,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --no-skills    Start with a blank slate — seed no bundled skills, and"
             echo "                   write \$MASON_HOME/.no-bundled-skills so future"
             echo "                   'mason update' runs never inject bundled skills either"
-            echo "  --branch NAME  Git branch to install (default: main)"
+            echo "  --branch NAME  Git branch to install (default: the repository's"
+            echo "                   default branch, asked of the remote)"
             echo "  --commit SHA   Pin checkout to a specific commit after clone/update"
             echo "                   (ignored when it would roll an existing install back)"
             echo "  --force-commit Apply --commit even if it rolls the install backwards"
@@ -536,7 +543,7 @@ detect_os() {
             OS="windows"
             DISTRO="windows"
             log_error "Windows detected. Please use the PowerShell installer:"
-            log_info "  iex (irm https://raw.githubusercontent.com/Mochi-Sora/Mason-Agent/main/scripts/install.ps1)"
+            log_info "  iex (irm https://raw.githubusercontent.com/Mochi-Sora/Mason-Agent/MasonAgent/scripts/install.ps1)"
             exit 1
             ;;
         *)
@@ -1470,8 +1477,62 @@ show_manual_install_hint() {
 # Installation
 # ============================================================================
 
+# The branch installed when the user did not pass --branch and none can be
+# resolved. MASON_DEFAULT_BRANCH is not just a fallback: it is a pin that wins
+# over detection, so set it to force a branch without reaching the network.
+DEFAULT_BRANCH="MasonAgent"
+
+# Print the repository's default branch, asked of the remote itself.
+#
+# Order matters: an explicit MASON_DEFAULT_BRANCH pin wins, then the remote's
+# symref (the only authoritative source). refs/remotes/origin/HEAD is written
+# once at clone time and survives a rename, so a clone made while the default
+# was "main" still reports origin/main long after that ref stopped existing --
+# exactly the stale answer that makes an update fetch a branch nobody serves.
+# It is therefore only the offline fallback, never the primary.
+resolve_default_branch() {
+    if [ -n "${MASON_DEFAULT_BRANCH:-}" ]; then
+        printf '%s\n' "$MASON_DEFAULT_BRANCH"
+        return 0
+    fi
+
+    local repo_url="${1:-${REPO_URL_HTTPS:-}}"
+    local resolved=""
+    local head_sha=""
+
+    if [ -n "$repo_url" ]; then
+        # Preferred: "ref: refs/heads/<name>\tHEAD".
+        resolved=$(git ls-remote --symref "$repo_url" HEAD 2>/dev/null \
+            | sed -n 's|^ref:[[:space:]]*refs/heads/\([^[:space:]]*\).*|\1|p' | head -n 1)
+
+        if [ -z "$resolved" ]; then
+            # Some servers omit the symref -- match HEAD's SHA against the heads.
+            head_sha=$(git ls-remote "$repo_url" HEAD 2>/dev/null | awk '{print $1; exit}')
+            if [ -n "$head_sha" ]; then
+                resolved=$(git ls-remote --heads "$repo_url" 2>/dev/null \
+                    | awk -v sha="$head_sha" '$1 == sha { sub("^refs/heads/", "", $2); print $2; exit }')
+            fi
+        fi
+    fi
+
+    if [ -z "$resolved" ] && [ -n "${INSTALL_DIR:-}" ]; then
+        resolved=$(git -C "$INSTALL_DIR" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null \
+            | sed 's|^origin/||')
+    fi
+
+    printf '%s\n' "${resolved:-$DEFAULT_BRANCH}"
+}
+
 clone_repo() {
     log_info "Installing to $INSTALL_DIR..."
+
+    # Resolve before anything interpolates $BRANCH: the update path fetches it,
+    # the clone path passes it to --branch, and write_bootstrap_marker records
+    # it in the desktop marker.
+    if [ -z "$BRANCH" ]; then
+        BRANCH="$(resolve_default_branch)"
+        log_info "Using repository default branch: $BRANCH"
+    fi
 
     # An interrupted previous clone leaves a .git with no initial commit, where
     # the update path's `git stash` / `git checkout` abort with "You do not
@@ -3092,6 +3153,14 @@ write_bootstrap_marker() {
 
     if [ -z "$pinned_commit" ]; then
         log_warn "Skipping bootstrap marker: could not resolve HEAD in $INSTALL_DIR"
+        return 0
+    fi
+
+    if [ -z "$BRANCH" ]; then
+        # clone_repo() resolves BRANCH; an empty value here means the repository
+        # stage never ran. An absent marker is a clean "bootstrap needed", while
+        # "pinnedBranch": "" is a malformed marker the desktop rejects.
+        log_warn "Skipping bootstrap marker: branch could not be resolved"
         return 0
     fi
 

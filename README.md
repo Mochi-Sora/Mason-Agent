@@ -26,19 +26,19 @@ Use any model you want — OpenRouter, OpenAI, your own endpoint, and many other
 
 ### Linux, macOS, WSL2
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Mochi-Sora/Mason-Agent/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Mochi-Sora/Mason-Agent/MasonAgent/scripts/install.sh | bash
 # then: mason
 ```
 
 ### Windows (native, PowerShell)
 ```powershell
-irm https://raw.githubusercontent.com/Mochi-Sora/Mason-Agent/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/Mochi-Sora/Mason-Agent/MasonAgent/scripts/install.ps1 | iex
 # then: mason
 ```
 
 ### Android / Termux
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Mochi-Sora/Mason-Agent/main/scripts/install-termux.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Mochi-Sora/Mason-Agent/MasonAgent/scripts/install-termux.sh | sh
 ```
 
 One line installs **dependencies first, framework second**. Dependencies: `uv`, Python 3.11, Git, a C/C++ toolchain, Node.js + npm, ripgrep, ffmpeg, Chromium (Playwright), the Browser Use CLI and the cua-driver. Framework: clone the repo and install it editable (`uv sync --extra all --locked`, falling back to a PyPI resolve), then the launchers, `~/.mason/config.yaml`, the 400MB Qwen2-0.5B (`llama-server` :8080) and a smoke test. First run downloads the model (one-time, resumable) — wait a minute, then `mason` to chat. No API keys needed — the local 0.5B handles memory/evolution for free.

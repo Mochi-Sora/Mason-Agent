@@ -1176,6 +1176,98 @@ def _resolve_node_runtime_npm() -> str | None:
     return None
 
 
+#: Last-resort branch for ``mason update`` when neither ``--branch``, the remote,
+#: nor the local ``origin/HEAD`` symref names one (offline run, no tracking ref).
+#: Overridable with MASON_DEFAULT_BRANCH. The resolver must never return an
+#: empty string: callers interpolate it straight into git commands, where
+#: ``git fetch origin ""`` fetches every branch instead of the one requested.
+_FALLBACK_UPDATE_BRANCH = "MasonAgent"
+
+
+def _origin_default_branch(timeout: int = 20) -> str:
+    """``origin``'s own default branch, or "" when it cannot be asked.
+
+    ``git ls-remote --symref origin HEAD`` prints ``ref: refs/heads/<name>\\tHEAD``
+    and is the only authoritative source. The local
+    ``refs/remotes/origin/HEAD`` symref is deliberately never the primary answer:
+    it is written once at clone time and survives a rename of the default branch,
+    so a checkout cloned while the default was ``main`` keeps claiming
+    ``origin/main`` long after that ref stopped existing -- exactly the stale
+    answer that makes an update fetch a branch nobody serves.
+
+    Bounded by *timeout*: an unreachable remote (offline laptop, black-holed
+    connection) must degrade to the local fallbacks, not hang the update.
+    """
+    from mason_cli.main import PROJECT_ROOT
+
+    from mason_cli.update_cmd import _base_git_cmd, _no_prompt_git_kwargs
+
+    try:
+        result = subprocess.run(
+            _base_git_cmd() + ["ls-remote", "--symref", "origin", "HEAD"],
+            cwd=PROJECT_ROOT, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=timeout, **_no_prompt_git_kwargs())
+    except (OSError, subprocess.SubprocessError):
+        return ""  # No git, no remote, or timed out -- try the next source.
+    if result.returncode != 0:
+        return ""
+    for line in (result.stdout or "").splitlines():
+        if not line.startswith("ref:"):
+            continue
+        parts = line.split()  # ("ref:", "refs/heads/<name>", "HEAD")
+        if len(parts) >= 2 and parts[1].startswith("refs/heads/"):
+            return parts[1][len("refs/heads/"):]
+    return ""
+
+
+def _local_origin_head_branch() -> str:
+    """The branch the checkout's local ``origin/HEAD`` symref names, or "".
+
+    Offline fallback only: it is stale on any checkout cloned before the default
+    branch was renamed.
+    """
+    from mason_cli.main import PROJECT_ROOT
+
+    from mason_cli.update_cmd import _base_git_cmd
+
+    try:
+        result = subprocess.run(
+            _base_git_cmd() + ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+            cwd=PROJECT_ROOT, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if result.returncode != 0:
+        return ""
+    name = (result.stdout or "").strip()
+    if name.startswith("origin/"):
+        return name[len("origin/"):]
+    return "" if name.startswith("refs/") else name
+
+
+def resolve_update_branch_name() -> str:
+    """The branch ``mason update`` targets when ``--branch`` was not given.
+
+    ``MASON_DEFAULT_BRANCH`` wins when set: an explicit pin beats detection, and
+    it is the only way to get a deterministic answer without a reachable remote.
+    Otherwise ask the remote, then the local symref, then the built-in fallback.
+    Split out so ``--check`` and the apply path, which do not share an ``args``
+    namespace, cannot drift apart on the answer.
+    """
+    override = os.environ.get("MASON_DEFAULT_BRANCH", "").strip()
+    if override:
+        return override
+    return _origin_default_branch() or _local_origin_head_branch() or _FALLBACK_UPDATE_BRANCH
+
+
 def _resolve_update_branch(args) -> str:
-    """Normalize ``args.branch`` to a non-empty name (default ``main``; blank/whitespace = default)."""
-    return (getattr(args, "branch", None) or "main").strip() or "main"
+    """Branch ``mason update`` targets: ``--branch`` when given, else origin's default.
+
+    Resolved instead of hardcoded so an update survives a rename of the
+    repository's default branch. The old name keeps serving bytes from
+    raw.githubusercontent.com (GitHub aliases the stale path), which is why the
+    breakage is invisible until ``git fetch origin <old-name>`` exits 1 with
+    "couldn't find remote ref" and the update dies at the fetch.
+    """
+    explicit = (getattr(args, "branch", None) or "").strip()
+    return explicit or resolve_update_branch_name()

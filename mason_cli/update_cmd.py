@@ -436,9 +436,16 @@ def _run_logged_subprocess(cmd, *, cwd=None, env=None):
     return result
 
 
-def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
+def _cmd_update_check(branch: str = "", *, branch_explicit: bool = False):
     """``mason update --check``: fetch and report without installing. ``branch_explicit`` is
     True iff --branch was passed (Docker installs print a notice instead of dropping the flag)."""
+    if not branch:
+        # Same resolver as the apply path, so --check can never disagree with what
+        # an update would actually fetch (a hardcoded default made it report on a
+        # branch that no longer exists the moment the default branch was renamed).
+        from mason_cli.main_install_repair import resolve_update_branch_name
+
+        branch = resolve_update_branch_name()
     # Same marker-first admission gate as the apply path, so --check never reports git
     # state for an install whose real update mechanism is an image pull.
     from mason_cli.update_contract import evaluate_update_admission, record_refusal_receipt

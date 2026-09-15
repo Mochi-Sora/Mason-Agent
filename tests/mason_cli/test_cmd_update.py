@@ -284,6 +284,9 @@ class TestCmdUpdateBranchFallback:
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
+    # Trunk pinned to "main": this exercises the fork-upstream path, which is
+    # keyed on the branch upstream actually shares, not on the resolved default.
+    @patch.dict("os.environ", {"MASON_DEFAULT_BRANCH": "main"})
     def test_update_on_fork_checks_upstream_when_origin_up_to_date(
         self, mock_run, _mock_which, mock_args, capsys
     ):
@@ -319,6 +322,7 @@ class TestCmdUpdateBranchFallback:
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
+    @patch.dict("os.environ", {"MASON_DEFAULT_BRANCH": "main"})
     def test_yes_on_fork_without_upstream_does_not_claim_up_to_date(
         self, mock_run, _mock_which, capsys
     ):
@@ -460,6 +464,7 @@ class TestCmdUpdateBranchFallback:
         finalize_receipt.assert_called_once_with("partial")
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
+    @patch.dict("os.environ", {"MASON_DEFAULT_BRANCH": "main"})
     def test_fork_upstream_sync_that_moves_head_runs_post_update_steps(
         self, mock_run, _mock_which, mock_args, capsys
     ):
@@ -985,10 +990,11 @@ class TestCmdUpdateCheckBranchFlag:
 
     @patch("mason_cli.config.detect_install_method", return_value="git")
     @patch("subprocess.run")
+    @patch.dict("os.environ", {"MASON_DEFAULT_BRANCH": "main"})
     def test_check_default_main_still_prefers_upstream(
         self, mock_run, _mock_method, capsys
     ):
-        """No --branch (or --branch=None) preserves the upstream-then-origin probe."""
+        """A trunk named ``main`` (the branch upstream shares) probes upstream first."""
         mock_run.side_effect = self._check_side_effect(
             target_branch="main", verify_ok=True, commit_count="0"
         )
@@ -1002,6 +1008,29 @@ class TestCmdUpdateCheckBranchFlag:
         # Compare ref is upstream/main (upstream fetch succeeded).
         rev_list_cmds = [c for c in commands if "rev-list" in c]
         assert any("upstream/main" in c for c in rev_list_cmds), rev_list_cmds
+
+    @patch("mason_cli.config.detect_install_method", return_value="git")
+    @patch("subprocess.run")
+    @patch.dict("os.environ", {"MASON_DEFAULT_BRANCH": "MasonAgent"})
+    def test_check_resolved_trunk_does_not_force_upstream(
+        self, mock_run, _mock_method, capsys
+    ):
+        """A trunk upstream does not share probes origin directly.
+
+        The upstream probe exists for the branch upstream actually has. Forcing
+        every resolved trunk through ``upstream`` would ask it for a ref it does
+        not serve — an extra failing round trip before the real origin fetch.
+        """
+        mock_run.side_effect = self._check_side_effect(
+            target_branch="MasonAgent", verify_ok=True, commit_count="0"
+        )
+        args = SimpleNamespace(check=True, branch=None)
+
+        cmd_update(args)
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert not any("upstream" in c for c in commands), commands
+        assert any("fetch" in c and "origin" in c and "MasonAgent" in c for c in commands), commands
 
 
 class TestCmdUpdateZipBranchRefusal:

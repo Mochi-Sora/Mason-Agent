@@ -231,20 +231,26 @@ async def update_mason():
 
 
 def _recent_upstream_commits(n: int = 20) -> List[Dict[str, Any]]:
-    """Commits the local checkout is behind ``origin/main`` by, newest first; [] on any failure.
+    """Commits the local checkout trails its remote default branch by, newest first; [] on any failure.
 
-    Logs the SAME range the behind-count uses (``HEAD..origin/main``, see
+    Logs the SAME range the behind-count uses (``HEAD..origin/<trunk>``, see
     ``banner._check_via_local_git``), NOT ``@{upstream}``: on a feature branch that is
     the branch's own tip (zero commits), leaving the changelog empty while the count is non-zero.
+    The trunk name is asked of the checkout rather than hardcoded, so a renamed default branch
+    cannot leave the changelog and the count disagreeing.
     """
     try:
+        from mason_cli.banner import _trunk_branch
+
+        project_root = Path(_server_path("PROJECT_ROOT"))
+        behind_range = f"HEAD..origin/{_trunk_branch(project_root)}"
         # git log emits UTF-8 (emoji/CJK subjects). On Windows text=True defaults to
         # the ANSI code page; an undefined cp1252 byte crashed the stdlib
         # _readerthread and killed the desktop backend — hence encoding="utf-8".
         out = subprocess.run(
             [
-                "git", "-C", str(_server_path("PROJECT_ROOT")), "log", "--format=%H%x1f%s%x1f%an%x1f%ct",
-                "HEAD..origin/main", f"-n{int(n)}",
+                "git", "-C", str(project_root), "log", "--format=%H%x1f%s%x1f%an%x1f%ct",
+                behind_range, f"-n{int(n)}",
             ],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
         )

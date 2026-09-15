@@ -355,6 +355,48 @@ def _reinstall_python_deps_after_zip(active_tool_dependencies) -> None:
     _m()._refresh_active_memory_provider_dependencies()
 
 
+def _github_slug(url: str) -> str:
+    """``owner/repo`` for a GitHub remote URL (https, ssh:// or scp-like), or ""."""
+    value = (url or "").strip()
+    for prefix in ("git@github.com:", "ssh://git@github.com/", "https://github.com/", "http://github.com/"):
+        if value.lower().startswith(prefix):
+            value = value[len(prefix):]
+            break
+    else:
+        return ""
+    if value.lower().endswith(".git"):
+        value = value[:-4]
+    parts = [part for part in value.split("/") if part]
+    return "/".join(parts[:2]) if len(parts) >= 2 else ""
+
+
+def _source_zip_url(branch: str) -> str:
+    """Source-ZIP URL for *branch* on THIS checkout's own origin remote.
+
+    The archive replaces the whole tree, so it has to come from the repository
+    the install actually tracks; a hardcoded URL would swap in another project's
+    code. Exits 1 when origin is not a GitHub remote we can address — failing
+    closed beats downloading the wrong repository.
+    """
+    from mason_cli.update_cmd import _base_git_cmd, _m
+
+    origin_url = ""
+    with suppress(Exception):
+        result = subprocess.run(
+            _base_git_cmd() + ["remote", "get-url", "origin"], cwd=_m().PROJECT_ROOT,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
+        if result.returncode == 0:
+            origin_url = (result.stdout or "").strip()
+
+    slug = _github_slug(origin_url)
+    if not slug:
+        print("✗ Cannot resolve the origin remote to a GitHub repository for the ZIP fallback.")
+        print(f"  origin: {origin_url or '(unset)'}")
+        print("  Fix the origin remote, or repair the git-side breakage and rerun `mason update`.")
+        _m().sys.exit(1)
+    return f"https://github.com/{slug}/archive/refs/heads/{branch}.zip"
+
+
 def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> bool:
     """Update via ZIP archive; used on Windows when git file I/O is broken (antivirus / NTFS filter
     drivers causing 'Invalid argument'). Returns ``False`` when a Desktop rebuild ran and failed."""
@@ -367,19 +409,23 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
     active_tool_dependencies = _m()._capture_active_tool_dependencies()
     pre_update_version = _read_project_version()  # snapshot before files are replaced, for the completion line
     # The static archive would silently ignore --branch — the exact silent-divergence bug it exists to
-    # prevent. Refuse rather than lie.
+    # prevent. Refuse rather than lie. "Supported" means the resolver's default branch, not the literal
+    # name ``main``: hardcoding that name refused every update once the default branch was renamed.
     branch = _m()._resolve_update_branch(args)
-    if branch != "main":
+    from mason_cli.main_install_repair import resolve_update_branch_name
+
+    default_branch = resolve_update_branch_name()
+    if branch != default_branch:
         print(f"✗ --branch={branch} is not supported on the Windows ZIP-fallback update path.")
         print(
             "  This path runs when git file I/O is broken on the system. "
             "Either resolve the git-side breakage (typically an antivirus "
             "or NTFS filter holding files open) and rerun `mason update "
-            f"--branch {branch}`, or update against main with `mason update`."
+            f"--branch {branch}`, or update against {default_branch} with `mason update`."
         )
         _m().sys.exit(1)
     _abort_zip_update_if_dirty_tree()
-    _download_and_swap_zip(branch, f"https://github.com/NousResearch/mason-agent/archive/refs/heads/{branch}.zip")
+    _download_and_swap_zip(branch, _source_zip_url(branch))
     _sweep_bytecode_after_update(branch)
     # Self-lock deferral: the code swap is committed; defer only the dependency sync when this process
     # holds a native extension the sync must rewrite.

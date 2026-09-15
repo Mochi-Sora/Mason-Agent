@@ -61,7 +61,7 @@ def test_prefetch_non_blocking():
         assert banner._update_result == 5
 
 
-def test_upstream_main_sha_disables_git_prompts(monkeypatch):
+def test_upstream_default_sha_disables_git_prompts(monkeypatch):
     """The passive HTTPS probe must never inherit the interactive terminal."""
     from mason_cli import banner
 
@@ -69,7 +69,7 @@ def test_upstream_main_sha_disables_git_prompts(monkeypatch):
     run = MagicMock(return_value=completed)
     monkeypatch.setattr(banner.subprocess, "run", run)
 
-    assert banner._upstream_main_sha() is None
+    assert banner._upstream_default_sha() is None
     kwargs = run.call_args.kwargs
     assert kwargs["stdin"] is banner.subprocess.DEVNULL
     assert kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"

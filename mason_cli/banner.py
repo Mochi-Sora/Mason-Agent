@@ -131,7 +131,13 @@ _UPDATE_CHECK_CACHE_SECONDS = 6 * 3600  # avoid repeated git fetches
 UPDATE_AVAILABLE_NO_COUNT = -1
 
 _UPSTREAM_REPO_URL = "https://github.com/Mochi-Sora/Mason-Agent.git"
-_OFFICIAL_REPO_CANONICAL = "github.com/mochi-sora/mason"
+# Canonical identity of the repository this build ships from, in both the form
+# _canonical_github_remote() produces and the owner/repo form the compare API needs.
+# It must name a repository that actually exists: it previously said
+# "github.com/mochi-sora/mason", which matches neither this repo nor upstream, so
+# the SSH fast path was dead and every SSH install fell through to the fetch path.
+_OFFICIAL_REPO_CANONICAL = "github.com/mochi-sora/mason-agent"
+_OFFICIAL_REPO_SLUG = "Mochi-Sora/Mason-Agent"
 
 
 def _canonical_github_remote(url: str | None) -> str:
@@ -215,7 +221,7 @@ def _github_compare_behind(current_rev: str, target_rev: str) -> Optional[int]:
     """
     if not (_is_full_sha(current_rev) and _is_full_sha(target_rev)):
         return None
-    url = f"https://api.github.com/repos/mochi-sora/mason/compare/{current_rev}...{target_rev}"
+    url = f"https://api.github.com/repos/{_OFFICIAL_REPO_SLUG}/compare/{current_rev}...{target_rev}"
 
     def _fetch():
         import urllib.request
@@ -246,21 +252,42 @@ def _tips_behind(head_rev: Optional[str], target_rev: Optional[str], repo_dir: O
     return counted if counted is not None else UPDATE_AVAILABLE_NO_COUNT
 
 
-def _upstream_main_sha() -> Optional[str]:
-    """Tip SHA of upstream main via HTTPS ls-remote (no auth, no prompts)."""
-    result = _git_run(["ls-remote", _UPSTREAM_REPO_URL, "refs/heads/main"], timeout=10, network=True)
+def _upstream_default_sha() -> Optional[str]:
+    """Tip SHA of the upstream repository's DEFAULT branch via HTTPS ls-remote (no auth, no prompts).
+
+    Asks for ``HEAD`` rather than ``refs/heads/<name>``: which branch is the
+    default is the remote's business, and a hardcoded name silently stopped
+    resolving the moment that branch was renamed — turning the update badge
+    permanently blank with no error anywhere.
+    """
+    result = _git_run(["ls-remote", _UPSTREAM_REPO_URL, "HEAD"], timeout=10, network=True)
     if result is None or result.returncode != 0 or not result.stdout:
         return None
     return result.stdout.split()[0] or None
 
 
 def _check_via_rev(local_rev: str) -> Optional[int]:
-    """Compare an embedded git revision to upstream main via ls-remote (see ``_tips_behind``)."""
-    return _tips_behind(local_rev, _upstream_main_sha())
+    """Compare an embedded git revision to the upstream default branch (see ``_tips_behind``)."""
+    return _tips_behind(local_rev, _upstream_default_sha())
+
+
+def _trunk_branch(repo_dir: Path) -> str:
+    """Branch this checkout tracks as its remote default; ``"main"`` when unknown.
+
+    ``origin/HEAD`` is written by ``git clone`` from the remote's own symref, so a
+    fresh install follows a renamed default branch with no code change. A literal
+    name instead made the badge silently stop updating: ``git fetch origin main``
+    failed, the check came back inconclusive, and no update was ever announced.
+    Only a checkout cloned before the rename hits the stale-symref fallback.
+    """
+    head = _git_stdout(["rev-parse", "--abbrev-ref", "origin/HEAD"], cwd=repo_dir)
+    if head and head != "origin/HEAD" and head.startswith("origin/"):
+        return head.split("/", 1)[1]
+    return "main"
 
 
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
-    """Count commits behind origin/main in a local checkout."""
+    """Count commits behind the remote default branch in a local checkout."""
     origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
     if _is_official_ssh_remote(origin_url):
         head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
@@ -271,12 +298,13 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         # ahead checkout nudges the user into `mason update`, which can wipe carried work — hence
         # the ancestor check, against the FRESH upstream SHA (a stale tracking ref can't fake an
         # up-to-date report).
-        return _tips_behind(head_rev, _upstream_main_sha(), repo_dir)
+        return _tips_behind(head_rev, _upstream_default_sha(), repo_dir)
 
     # Installer checkouts are shallow (`git clone --depth 1`): a plain `git fetch` would unshallow
-    # the repo and `rev-list --count HEAD..origin/main` would report a bogus "12492 commits
+    # the repo and `rev-list --count HEAD..origin/<trunk>` would report a bogus "12492 commits
     # behind". Fetch with --depth 1 to preserve the boundary and compare tip SHAs instead. Full
     # clones keep the exact count path. Mirrors apps/desktop/electron/main.cjs.
+    trunk = _trunk_branch(repo_dir)
     is_shallow = _git_stdout(["rev-parse", "--is-shallow-repository"], cwd=repo_dir) == "true"
 
     def _fetch() -> bool:
@@ -290,9 +318,9 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
 
         # Scope the fetch to the one branch compared against: an unscoped ``git fetch origin``
         # transfers ~1,400 remote heads (3.0 s vs 0.55 s measured) and can burn the full timeout.
-        # A scoped fetch still updates ``origin/main`` and FETCH_HEAD; ``--depth 1`` preserves
+        # A scoped fetch still updates ``origin/<trunk>`` and FETCH_HEAD; ``--depth 1`` preserves
         # the shallow boundary.
-        fetch_args = ["fetch", "origin", "main", *(["--depth", "1"] if is_shallow else []), "--quiet"]
+        fetch_args = ["fetch", "origin", trunk, *(["--depth", "1"] if is_shallow else []), "--quiet"]
         return _git_ok(fetch_args, cwd=repo_dir, timeout=10, network=True)
 
     fetch_ok = _quiet(_fetch, False)  # Offline or timeout — don't use stale refs
@@ -303,14 +331,14 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         # (#82166, review #92578)
         if not fetch_ok:
             return None
-        # No history across the shallow boundary. `origin/main` may not be a tracking ref in a
-        # `clone --depth 1`, so prefer FETCH_HEAD (just updated) and fall back to origin/main.
+        # No history across the shallow boundary. `origin/<trunk>` may not be a tracking ref in a
+        # `clone --depth 1`, so prefer FETCH_HEAD (just updated) and fall back to origin/<trunk>.
         head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
         target_rev = (
             _git_stdout(["rev-parse", "FETCH_HEAD"], cwd=repo_dir)
-            or _git_stdout(["rev-parse", "origin/main"], cwd=repo_dir))
+            or _git_stdout(["rev-parse", f"origin/{trunk}"], cwd=repo_dir))
         return _tips_behind(head_rev, target_rev)
-    behind = _git_count(["rev-list", "--count", "HEAD..origin/main"], cwd=repo_dir)
+    behind = _git_count(["rev-list", "--count", f"HEAD..origin/{trunk}"], cwd=repo_dir)
     return behind if fetch_ok or (behind is not None and behind > 0) else None
 
 

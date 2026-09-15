@@ -20,7 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
 
 
-def run_write_marker(install_dir, *, commit="", branch="main"):
+def run_write_marker(install_dir, *, commit="", branch="MasonAgent"):
     """Source install.sh and invoke write_bootstrap_marker in isolation.
 
     install.sh guards its own entrypoint behind MANIFEST_MODE/STAGE_NAME/main,
@@ -68,7 +68,7 @@ def test_marker_matches_the_schema_the_desktop_validates(tmp_path):
     payload = json.loads(marker.read_text())
     assert payload["schemaVersion"] == 1
     assert len(payload["pinnedCommit"]) >= 7
-    assert payload["pinnedBranch"] == "main"
+    assert payload["pinnedBranch"] == "MasonAgent"
     assert payload["completedAt"].endswith("Z")
 
 
@@ -100,6 +100,20 @@ def test_no_marker_written_when_head_cannot_be_resolved(tmp_path):
     result = run_write_marker(install_dir)
 
     assert result.returncode == 0, "an unresolvable HEAD must not fail the install"
+    assert not (install_dir / ".mason-bootstrap-complete").exists()
+
+
+def test_no_marker_written_when_branch_is_unresolved(tmp_path):
+    """clone_repo() resolves BRANCH, so an empty value means that stage never ran.
+
+    The desktop's validator rejects ``"pinnedBranch": ""``, so the correct
+    outcome is no marker at all — an absent marker is a clean "bootstrap needed".
+    """
+    install_dir = make_checkout(tmp_path)
+
+    result = run_write_marker(install_dir, branch="")
+
+    assert result.returncode == 0, "an unresolved branch must not fail the install"
     assert not (install_dir / ".mason-bootstrap-complete").exists()
 
 
