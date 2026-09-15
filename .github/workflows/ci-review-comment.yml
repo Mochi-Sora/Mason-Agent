@@ -34,8 +34,14 @@ permissions:
 # cancels the poller of the run that GitHub superseded. The group keys
 # on the head repository too: fork PRs often share a branch name
 # (``MasonAgent``, ``patch-1``), and two PRs must not cancel each other.
+#
+# The group keys on the triggering event as well. A push to a branch that
+# also has an open pull request starts a second, skipped poller run on the
+# same head branch -- the job ``if:`` is false for a push -- and without the
+# event in the key that no-op run would cancel the live poller that is
+# maintaining the review comment.
 concurrency:
-  group: ci-review-comment-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
+  group: ci-review-comment-${{ github.event.workflow_run.event }}-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
   cancel-in-progress: true
 
 jobs:

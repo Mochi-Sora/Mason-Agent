@@ -13,7 +13,11 @@ on:
   push:
     # Glob patterns only -- expressions are not evaluated in `on:`. The
     # trunk-only rule for publish/merge is resolved in those jobs' `if:`.
-    branches: ['**']
+    # Dependabot branches are the exception: a push run there is skipped by
+    # that same gate, buys no coverage, and still wakes the `workflow_run`
+    # listeners (`ci-review-comment.yml`, `publish-e2e-evidence.yml`). Their
+    # pull requests run the full graph through `pull_request:` above.
+    branches-ignore: ['dependabot/**']
   release:
     types: [published]
 

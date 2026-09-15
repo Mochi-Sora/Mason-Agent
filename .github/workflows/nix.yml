@@ -15,7 +15,11 @@ on:
   push:
     # Glob patterns only -- no expressions in `on:`; the trunk gate is on the
     # `detect` job below.
-    branches: ['**']
+    # Dependabot branches are the exception: a push run there is skipped by
+    # that same gate, buys no coverage, and still wakes the `workflow_run`
+    # listeners (`ci-review-comment.yml`, `publish-e2e-evidence.yml`). Their
+    # pull requests run the full graph through `pull_request:`.
+    branches-ignore: ['dependabot/**']
 
 permissions:
   contents: read

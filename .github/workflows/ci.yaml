@@ -22,7 +22,12 @@ on:
     # match no branch at all and push CI would silently never run. Every
     # branch is accepted here; the trunk-only rule lives on the jobs' `if:`
     # (see `detect` below), which keeps it right if the trunk is renamed.
-    branches: ['**']
+    #
+    # Dependabot branches are the exception. A push run there is skipped by
+    # that same gate, so it buys no coverage, and it still wakes the
+    # `workflow_run` listeners (`ci-review-comment.yml`, `publish-e2e-evidence.yml`).
+    # Their pull requests run the full graph through `pull_request:` below.
+    branches-ignore: ['dependabot/**']
 
 permissions:
   contents: read
