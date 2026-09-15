@@ -417,15 +417,40 @@ def _baked_banner_state() -> Optional[dict]:
     return {"upstream": baked, "local": baked, "ahead": 0} if baked else None
 
 
+def _origin_trunk_ref(repo_dir: Optional[Path] = None) -> Optional[str]:
+    """Remote-tracking ref for ``origin``'s trunk, or None when it can't be proven.
+
+    The trunk's NAME is not a static fact — this repository renamed it once already
+    (``main`` -> ``MasonAgent``) — and a count against a dead ref does not fail, it
+    quietly reports "0 ahead", which is how the badge silently stopped updating. So:
+    read the symref git maintains for ``refs/remotes/origin/HEAD`` (branch-name
+    agnostic), prove the ref still resolves, and only then trust it. ``origin/main``
+    and ``origin/master`` stay as candidates for checkouts whose symref was never
+    written; when none resolve the caller degrades to the baked SHA instead of
+    inventing a comparison.
+    """
+    repo_dir = repo_dir or _resolve_repo_dir()
+    if repo_dir is None:
+        return None
+    symref = _git_stdout(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], cwd=repo_dir)
+    for ref in ([symref] if symref else []) + ["origin/main", "origin/master"]:
+        if _git_stdout(["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], cwd=repo_dir):
+            return ref
+    return None
+
+
 def _compute_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
     repo_dir = repo_dir or _resolve_repo_dir()
     if repo_dir is None:
         return _baked_banner_state()
-    upstream, local = (_git_stdout(["rev-parse", "--short=8", rev], cwd=repo_dir) for rev in ("origin/main", "HEAD"))
-    if not upstream or not local:
-        # Live-git lookup failed (e.g. shallow clone without origin/main).
+    trunk = _origin_trunk_ref(repo_dir)
+    if trunk is None:
         return _baked_banner_state()
-    ahead = _git_count(["rev-list", "--count", "origin/main..HEAD"], cwd=repo_dir) or 0
+    upstream, local = (_git_stdout(["rev-parse", "--short=8", rev], cwd=repo_dir) for rev in (trunk, "HEAD"))
+    if not upstream or not local:
+        # Live-git lookup failed (e.g. shallow clone without the trunk ref).
+        return _baked_banner_state()
+    ahead = _git_count(["rev-list", "--count", f"{trunk}..HEAD"], cwd=repo_dir) or 0
     return {"upstream": upstream, "local": local, "ahead": max(ahead, 0)}
 
 
