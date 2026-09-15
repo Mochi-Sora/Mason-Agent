@@ -1,7 +1,7 @@
 name: Publish E2E evidence
 
 # This runs only from the default branch after CI completes. It intentionally
-# checks out main, never the PR ref, and treats the downloaded artifact as
+# checks out MasonAgent, never the PR ref, and treats the downloaded artifact as
 # untrusted input before uploading validated GitHub attachments.
 on:
   workflow_run:

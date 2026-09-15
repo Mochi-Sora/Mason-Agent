@@ -55,7 +55,7 @@ jobs:
         id: base
         run: |
           # For PRs, diff against the merge base with the target branch.
-          # For pushes to main, diff against the previous commit on main.
+          # For pushes to MasonAgent, diff against the previous commit on MasonAgent.
           if [ "${{ inputs.event_name }}" = "pull_request" ]; then
             BASE_SHA=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
             BASE_REF="origin/${{ github.base_ref }}"

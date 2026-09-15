@@ -79,7 +79,7 @@ jobs:
           # Added lines only, excluding lockfiles.
           # Three-point diff (base...head) diffs from the merge base to HEAD,
           # so only changes introduced by this PR are included — not changes
-          # that landed on main after the PR branched off.
+          # that landed on MasonAgent after the PR branched off.
           DIFF=$(git diff "$BASE"..."$HEAD" -- . ':!uv.lock' ':!*.lock' ':!package-lock.json' ':!yarn.lock' || true)
 
           FINDINGS=""

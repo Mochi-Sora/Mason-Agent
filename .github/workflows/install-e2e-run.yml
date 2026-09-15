@@ -15,7 +15,7 @@ name: Install & Update E2E (reusable)
 #       uses: ./.github/workflows/install-e2e-run.yml
 #       with:
 #         route: update
-#         install-ref: refs/heads/main
+#         install-ref: refs/heads/MasonAgent
 
 on:
   workflow_call:
@@ -25,10 +25,10 @@ on:
         required: true
         type: string
       install-ref:
-        description: 'What to install before updating: a branch, a tag (v2026.7.7), or a SHA reachable from main.'
+        description: 'What to install before updating: a branch, a tag (v2026.7.7), or a SHA reachable from MasonAgent.'
         required: false
         type: string
-        default: refs/heads/main
+        default: refs/heads/MasonAgent
       runner:
         description: 'Runner label.'
         required: false
@@ -91,12 +91,12 @@ jobs:
           # Outside the workspace on purpose: the script creates this directory
           # up front, and an untracked dir inside the repo makes the worktree
           # dirty -- which dev-sandbox reacts to by snapshotting the working
-          # copy into a fresh fake-main commit on every invocation, moving the
+          # copy into a fresh fake-MasonAgent commit on every invocation, moving the
           # update target mid-run.
           MASON_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
 
       # Artifact names cannot contain '/', and install-ref may be a full ref
-      # like refs/heads/main. GitHub Actions expressions have no string-replace
+      # like refs/heads/MasonAgent. GitHub Actions expressions have no string-replace
       # function, so build the safe name here. Runs even on failure -- that is
       # exactly when the logs are wanted.
       - name: Build artifact name

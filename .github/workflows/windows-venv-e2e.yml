@@ -6,9 +6,9 @@ name: Windows venv-holder live E2E
 # spawns actual processes with realistic Mason argv shapes and drives the
 # REAL detection/classification/exemption code against the live process
 # table — the coverage that cannot exist on the Linux lanes and that the
-# maintainer cannot exercise locally before the work reaches main.
+# maintainer cannot exercise locally before the work reaches MasonAgent.
 #
-# Deliberately NOT wired to pull_request/main: it fires only on pushes to
+# Deliberately NOT wired to pull_request/MasonAgent: it fires only on pushes to
 # wine2e/** working branches, so it costs nothing on normal PRs. Delete or
 # keep dormant after the venv-holder work lands.
 

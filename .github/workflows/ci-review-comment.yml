@@ -33,7 +33,7 @@ permissions:
 # One poller per CI run. A new push starts a new CI run, and its poller
 # cancels the poller of the run that GitHub superseded. The group keys
 # on the head repository too: fork PRs often share a branch name
-# (``main``, ``patch-1``), and two PRs must not cancel each other.
+# (``MasonAgent``, ``patch-1``), and two PRs must not cancel each other.
 concurrency:
   group: ci-review-comment-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
   cancel-in-progress: true

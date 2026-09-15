@@ -13,12 +13,12 @@ name: Nix flake check
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [MasonAgent]
 
 permissions:
   contents: read
 
-# PR runs collapse to the newest commit. A push to main is never cancelled:
+# PR runs collapse to the newest commit. A push to MasonAgent is never cancelled:
 # each one saves the store cache that later PRs restore from, so cancelling a
 # merge would leave the next PR to build from nothing.
 concurrency:
@@ -91,10 +91,10 @@ jobs:
           # of the lockfile, so an old store still removes most of the work.
           restore-prefixes-first-match: nix-${{ runner.os }}-
 
-          # Save from main only. A cache that a PR writes is visible to that
+          # Save from MasonAgent only. A cache that a PR writes is visible to that
           # PR alone and never to another branch, so a save there spends the
           # 10 GB quota of the repository and helps no later run. A PR still
-          # restores: it reads the cache that the merge to main wrote. This is
+          # restores: it reads the cache that the merge to MasonAgent wrote. This is
           # the same rule that docker.yml applies to `cache-to`.
           save: ${{ github.event_name != 'pull_request' }}
 

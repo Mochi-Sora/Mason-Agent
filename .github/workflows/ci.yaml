@@ -12,12 +12,12 @@ name: CI
 #
 # SECURITY: this workflow runs PR-controlled actions, workflows, and code.
 # Do not add ``secrets: inherit`` or GitHub App credentials here. Trusted
-# main-only automation uses protected environments in its own workflows.
+# MasonAgent-only automation uses protected environments in its own workflows.
 
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [MasonAgent]
 
 permissions:
   contents: read
@@ -287,7 +287,7 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────
   # CI timing report: collect per-job/step durations from the GitHub API,
-  # cache them on main (as a baseline), and on PRs generate an HTML diff
+  # cache them on MasonAgent (as a baseline), and on PRs generate an HTML diff
   # report with a gantt chart + per-step breakdown. The report is uploaded
   # as an artifact and a markdown summary is written to $GITHUB_STEP_SUMMARY.
   #
@@ -311,7 +311,7 @@ jobs:
         with:
           path: ci-timings-baseline.json
           # Prefix-match: exact key will never hit (run_id differs), so
-          # restore-keys finds the most recent baseline from main.
+          # restore-keys finds the most recent baseline from MasonAgent.
           key: ci-timings-baseline-never-exact
           restore-keys: |
             ci-timings-baseline-
@@ -366,8 +366,8 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           cat ci-timings-summary.md >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Save baseline cache (main only)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      - name: Save baseline cache (MasonAgent only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/MasonAgent'
         run: |
           # Degraded runs (API rate-limited) produce no ci-timings.json —
           # skip rather than fail, and never cache an empty baseline.
@@ -377,8 +377,8 @@ jobs:
             echo "No timings JSON this run — skipping baseline update"
           fi
 
-      - name: Upload baseline to cache (main only)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && hashFiles('ci-timings-baseline.json') != ''
+      - name: Upload baseline to cache (MasonAgent only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/MasonAgent' && hashFiles('ci-timings-baseline.json') != ''
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ci-timings-baseline.json
