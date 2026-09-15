@@ -418,6 +418,50 @@ def test_llamacpp_dead_server_raises_friendly_error(tmp_path, monkeypatch):
     assert result is None or result.get("base_url", "").startswith("http://127.0.0.1:9999")
 
 
+def test_llamacpp_aux_route_adopts_managed_endpoint(tmp_path, monkeypatch, stub_server):
+    """An auxiliary task pointed at the managed runtime must build a client from the runtime's own
+    endpoint + key. ``llamacpp`` is deliberately not a PROVIDER_REGISTRY entry and its key never
+    lands in the environment, so the registry path could only ever answer "no API key was found" —
+    which is what every aux task aimed at the local model hit. The served model id must also be
+    adopted when the task configures none: the router 400s a model it does not serve, and the main
+    chat model is never a local one."""
+    monkeypatch.setenv("MASON_HOME", str(tmp_path / ".mason"))
+    port, handler = stub_server
+    handler.models = {"data": [{"id": "qwen2-0_5b-instruct-q4_k_m"}]}
+    from mason_cli.local_runtime.supervisor import state_path
+
+    state_path().parent.mkdir(parents=True, exist_ok=True)
+    state_path().write_text(json.dumps({
+        "base_url": f"http://127.0.0.1:{port}/v1", "api_key": "sk-managed", "pid": os.getpid(),
+    }), encoding="utf-8")
+
+    from agent.auxiliary_client import resolve_provider_client
+
+    for alias in ("llamacpp", "llama.cpp", "llama-cpp"):
+        client, model = resolve_provider_client(alias)
+        assert client is not None, alias
+        assert client.api_key == "sk-managed", alias
+        assert str(client.base_url).startswith(f"http://127.0.0.1:{port}"), alias
+        assert model == "qwen2-0_5b-instruct-q4_k_m", alias
+
+    # An explicit task model still wins over the served id.
+    _, explicit = resolve_provider_client("llamacpp", model="some-other-gguf")
+    assert explicit == "some-other-gguf"
+
+
+def test_llamacpp_aux_route_without_server_builds_no_client(tmp_path, monkeypatch):
+    """No managed server -> (None, None), so the caller's fallback chain still runs; the aux router
+    must not invent a client (or a key) for a runtime that is not up."""
+    monkeypatch.setenv("MASON_HOME", str(tmp_path / ".mason"))
+    monkeypatch.setattr(
+        "mason_cli.local_runtime.endpoint.resolve_llamacpp_endpoint",
+        lambda *a, **k: None)
+
+    from agent.auxiliary_client import resolve_provider_client
+
+    assert resolve_provider_client("llamacpp") == (None, None)
+
+
 def test_llamacpp_endpoint_starting_server_resolves(tmp_path, monkeypatch):
     """The restart race: state written at spawn, server not yet healthy,
     supervisor child alive — resolution must return the endpoint (a
@@ -518,7 +562,7 @@ def test_boot_in_flight_real_gate(tmp_path, monkeypatch):
     """_boot_in_flight exercised FOR REAL (the previous regression test
     monkeypatched it — and the real one threw TypeError on every call,
     silently disabling the boot wait). Enabled + verified manifest on
-    disk -> True; either missing -> False."""
+    disk + something to serve -> True; any of the three missing -> False."""
     monkeypatch.setenv("MASON_HOME", str(tmp_path / ".mason"))
     from mason_cli.local_runtime import endpoint as ep
     from mason_cli.local_runtime.binaries import runtimes_root
@@ -526,14 +570,21 @@ def test_boot_in_flight_real_gate(tmp_path, monkeypatch):
     enabled = {"local_runtime": {"enabled": True}}
     # Not installed yet -> False.
     assert ep._boot_in_flight(enabled) is False
-    # Verified install manifest -> True.
+    # Verified install manifest -> still False while nothing is staged: ensure_local_runtime
+    # refuses to boot an empty server, so waiting for one only stalls the full timeout.
     install = runtimes_root() / "b10290" / "cuda"
     install.mkdir(parents=True)
     (install / "manifest.json").write_text(
         json.dumps({"tag": "b10290", "verified_version": "5015 (abc)"}),
         encoding="utf-8")
+    assert ep._boot_in_flight(enabled) is False
+    # Installed + a staged GGUF -> True.
+    from mason_cli.local_runtime.bootstrap import models_dir
+
+    models_dir().mkdir(parents=True, exist_ok=True)
+    (models_dir() / "qwen2-0_5b-instruct-q4_k_m.gguf").write_bytes(b"GGUF")
     assert ep._boot_in_flight(enabled) is True
-    # Disabled -> False even when installed.
+    # Disabled -> False even when installed + staged.
     assert ep._boot_in_flight({"local_runtime": {"enabled": False}}) is False
 
 

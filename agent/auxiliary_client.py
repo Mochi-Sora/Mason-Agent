@@ -4600,6 +4600,73 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     return _route_client(req, client, final_model)
 
 
+def _llamacpp_served_model(base_url: str, api_key: str) -> Optional[str]:
+    """First model id the running llama.cpp router serves.
+
+    The managed server runs in router mode: a request that names no model is a 400, so an aux task
+    with no model configured must discover one rather than send an empty id. Both the native
+    ``/models`` and the OpenAI-compat ``/v1/models`` alias are tried — llama-server answers both,
+    while a detected external llama-family server usually answers only one.
+    """
+    import urllib.request
+
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    base = base_url.rstrip("/")
+    candidates = [base + "/models"]
+    if base.endswith("/v1"):
+        candidates.insert(0, base[:-3].rstrip("/") + "/models")
+    for url in candidates:
+        try:
+            request = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(request, timeout=10) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception:
+            continue
+        for entry in payload.get("data") or []:
+            model_id = str(entry.get("id") or "").strip()
+            if model_id:
+                return model_id
+    return None
+
+
+def _resolve_llamacpp_branch(req: _ResolveRequest) -> _ResolveResult:
+    """Managed llama.cpp runtime: the running server is the credential.
+
+    ``llamacpp`` is deliberately not a PROVIDER_REGISTRY entry and its key never lands in the
+    environment — the runtime writes it to its own state file. The registry path can therefore only
+    ever answer "no API key was found", which is what every auxiliary task pointed at the local model
+    hit (compression, approval, title generation, mcp, review). This branch mirrors
+    ``mason_cli.runtime_provider_custom._resolve_llamacpp_runtime`` (the main-model path): resolve the
+    supervised endpoint, adopt its bearer key, and discover the served model id when the caller named
+    none.
+    """
+    try:
+        from mason_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
+
+        # wait_for_boot_s>0 is load-bearing: a messaging gateway never boots the managed runtime
+        # (only the dashboard/web backend does), so an aux task is often the ONLY caller that would
+        # ever bring it up. Passing 0 disables the on-demand boot rung, the endpoint stays None, and
+        # the call falls through to the registry path — the confusing "no API key was found" this
+        # branch exists to kill.
+        endpoint = resolve_llamacpp_endpoint()
+    except Exception:
+        endpoint = None
+    if not endpoint or not endpoint.get("base_url"):
+        logger.debug("resolve_provider_client: managed llama.cpp runtime is not running "
+                     "and could not be started")
+        return None, None
+    base_url = _to_openai_base_url(str(endpoint["base_url"]).rstrip("/"))
+    api_key = ((req.explicit_api_key or "").strip() or str(endpoint.get("api_key") or "")
+               or "no-key-required")
+    model = req.model or _llamacpp_served_model(base_url, api_key)
+    final_model = _normalize_resolved_model(model, req.provider)
+    client = _wrap_transport(req, _create_openai_client(api_key=api_key, base_url=base_url),
+                             final_model or "", base_url, api_key)
+    logger.debug("resolve_provider_client: llamacpp (%s) via managed runtime at %s",
+                 final_model, base_url)
+    return _route_client(req, client, final_model)
+
+
 def _resolve_azure_foundry_branch(req: _ResolveRequest) -> _ResolveResult:
     """Azure Foundry via the runtime resolver: the generic PROVIDER_REGISTRY path only knows the static
     AZURE_FOUNDRY_API_KEY env var, missing ``auth_mode: entra_id`` (callable bearer) and config base_url overrides."""
@@ -4760,6 +4827,10 @@ def _resolve_registry_branch(req: _ResolveRequest) -> _ResolveResult:
 
 # Explicit providers with a dedicated branch; anything else falls through to named custom
 # providers → azure-foundry → PROVIDER_REGISTRY (order preserved from the original if-chain).
+# Managed local runtime aliases — one source of truth for the branches map and the model pre-fill
+# exclusion below (mirrors mason_cli.runtime_provider_custom._LLAMACPP_ALIASES).
+_LOCAL_RUNTIME_PROVIDER_ALIASES: Tuple[str, ...] = ("llamacpp", "llama.cpp", "llama-cpp")
+
 _EXPLICIT_PROVIDER_BRANCHES: Dict[str, Callable[[_ResolveRequest], _ResolveResult]] = {
     "auto": _resolve_auto_branch,
     "openrouter": _resolve_openrouter_branch,
@@ -4768,6 +4839,10 @@ _EXPLICIT_PROVIDER_BRANCHES: Dict[str, Callable[[_ResolveRequest], _ResolveResul
     "xai-oauth": _resolve_xai_oauth_branch,
     "custom": _resolve_custom_branch,
 }
+# No registry entry and no env key exist for these — the supervised server is the credential — so
+# they must route to the managed runtime instead of the PROVIDER_REGISTRY dead end.
+_EXPLICIT_PROVIDER_BRANCHES.update(
+    {alias: _resolve_llamacpp_branch for alias in _LOCAL_RUNTIME_PROVIDER_ALIASES})
 
 
 def resolve_provider_client(
@@ -4801,9 +4876,12 @@ def resolve_provider_client(
                 explicit_api_key = None
     # Model for concrete providers: caller ``model`` → catalog default (empty for OAuth-gated providers whose
     # lists drift) → configured main model (MoA → aggregator), keeping OAuth aux tasks off the Step-2 fallback.
-    # Excluded: ``auto`` (a stale main slug could pair with any picked provider) and Nous + vision (the
-    # Portal's tier-aware vision recommendation must win over a text-only model).
-    if not model and provider != "auto" and not (provider == "nous" and is_vision):
+    # Excluded: ``auto`` (a stale main slug could pair with any picked provider), the managed local
+    # runtime (its served model id must win — the router 400s a model it does not serve, and the main
+    # chat model is never a local one), and Nous + vision (the Portal's tier-aware vision
+    # recommendation must win over a text-only model).
+    if (not model and provider != "auto" and provider not in _LOCAL_RUNTIME_PROVIDER_ALIASES
+            and not (provider == "nous" and is_vision)):
         # ``auto`` is intentionally excluded: `_resolve_auto_route(main_runtime=...)` returns the model paired
         # with the provider it actually selected. Pre-filling an auto call from `_read_main_model()` can
         # leak a stale process-global runtime into a different provider (for example Claude model slug on
@@ -6450,6 +6528,22 @@ _ResolvedAuxRoute = NamedTuple("_ResolvedAuxRoute", [
     ("effective_provider", str)])
 
 
+def _unavailable_provider_message(provider: str) -> str:
+    """Actionable reason an explicitly configured provider resolved to no client.
+
+    The managed local runtime has no API key by design (the supervised server IS the credential), so
+    the generic "set X_API_KEY" text misdiagnosed a server that is merely not running — the exact
+    message every aux task pointed at llamacpp produced.
+    """
+    if provider in _LOCAL_RUNTIME_PROVIDER_ALIASES:
+        return (f"Auxiliary tasks are pointed at the local model runtime (provider '{provider}'), "
+                f"but its llama-server isn't running and could not be started. Start it from the "
+                f"Local Models pane, or point the task at another provider with `mason model`.")
+    return (f"Provider '{provider}' is set in config.yaml but no API key was found. "
+            f"Set the {provider.upper()}_API_KEY environment variable, or switch to "
+            f"a different provider with `mason model`.")
+
+
 def _resolve_call_client(
     task: Optional[str], *, provider: Optional[str], model: Optional[str], base_url: Optional[str],
     api_key: Optional[str], resolved_provider: str, resolved_model: Optional[str],
@@ -6487,10 +6581,7 @@ def _resolve_call_client(
                 fb_client, fb_model, fb_label = _try_configured_fallback_for_unavailable_client(
                     task, _explicit)
                 if fb_client is None:
-                    raise RuntimeError(
-                        f"Provider '{_explicit}' is set in config.yaml but no API key was found. "
-                        f"Set the {_explicit.upper()}_API_KEY environment variable, or switch to "
-                        f"a different provider with `mason model`.")
+                    raise RuntimeError(_unavailable_provider_message(_explicit))
                 client, final_model = fb_client, fb_model
                 if async_mode:
                     client, final_model = _to_async_client(

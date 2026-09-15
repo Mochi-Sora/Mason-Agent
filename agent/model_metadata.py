@@ -1315,9 +1315,35 @@ def _model_name_suggests_stale_32k_underreport(model: str) -> bool:
     return _model_name_suggests_kimi(model) or _model_name_suggests_minimax(model)
 
 
+def _managed_runtime_context_length(model: str, base_url: str) -> Optional[int]:
+    """Window this box's managed local runtime was LAUNCHED with, for ``model``.
+
+    The runtime is Mason's own supervisor, so the window is a record (``presets.ini``), not a
+    probe — and it must beat probing, because in router mode a not-yet-loaded child answers no
+    probe at all (see ``_llamacpp_context``) and callers then fall through to the hardcoded
+    catalog family guess. Live failure: a lazily-loaded 32,768-token qwen child was resolved as
+    131,072 (catalog ``qwen``), so a ~56K-token summary prompt 400'd and compaction degraded to
+    the deterministic fallback. Ownership-gated inside the runtime, so an external llama-server
+    on one of our ports is untouched.
+    """
+    try:
+        from mason_cli.local_runtime.endpoint import managed_context_length
+
+        return managed_context_length(model, base_url)
+    except Exception:
+        logger.debug("managed local runtime context lookup failed", exc_info=True)
+        return None
+
+
 def _query_local_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
-    """Local-server context probe, short-TTL cached (see _LOCAL_CTX_PROBE_CACHE)."""
-    return _memo_local_probe((_strip_provider_prefix(model), base_url.rstrip("/")), lambda: _query_local_context_length_uncached(model, base_url, api_key=api_key))
+    """Local-server context length: the managed runtime's own launch record when this box serves
+    the model (cheap, network-free, correct while the child is loading or unloaded), else a
+    short-TTL cached live probe (see _LOCAL_CTX_PROBE_CACHE)."""
+    model = _strip_provider_prefix(model)
+    managed = _managed_runtime_context_length(model, base_url)
+    if managed:
+        return managed
+    return _memo_local_probe((model, base_url.rstrip("/")), lambda: _query_local_context_length_uncached(model, base_url, api_key=api_key))
 
 
 def _positive_int(value: Any) -> Optional[int]:
@@ -1337,8 +1363,15 @@ def _lmstudio_context(client, lmstudio_url: str, model: str) -> Optional[int]:
 
 
 def _llamacpp_context(client, server_url: str, model: str) -> Optional[int]:
-    """llama.cpp /props: the RUNTIME n_ctx, answered by the router even for a not-yet-loaded model
-    (while /v1/models has meta=null), so a lazily-loaded model doesn't fall to a family catch-all."""
+    """llama.cpp /props: the child's RUNTIME n_ctx — and ONLY while that child is loaded.
+
+    Router mode is the trap: ``/props?model=X`` needs a live child (a cold or unloaded one errors
+    with ``proxy error: Could not establish connection``, an unknown id 400s), and the bare
+    ``/props`` documents the ROUTER (``default_generation_settings.n_ctx == 0``), not the model.
+    So this probe answers nothing for a lazily-loaded model — managed installs get the window
+    from ``_managed_runtime_context_length`` (the launch record) instead of falling through to
+    the catalog family catch-all that this docstring used to claim the router covered.
+    """
     import httpx
     for props_path in (f"/props?model={model}", "/props"):
         try:

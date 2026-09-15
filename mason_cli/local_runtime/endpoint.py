@@ -78,6 +78,45 @@ def managed_get_json(base: str, api_key: str, route: str, timeout_s: float) -> o
         return json.loads(r.read())
 
 
+def _origin(url: str) -> str:
+    """``scheme://host:port`` — path-insensitive, so a caller's ``…/v1/`` and the state file's
+    ``…/v1`` compare equal while another install's server on the stable port does not."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(str(url or "").strip())
+    return f"{parsed.scheme.lower()}://{parsed.hostname or ''}:{parsed.port or ''}"
+
+
+def managed_context_length(model: str, base_url: str = "") -> int | None:
+    """Context window the managed runtime will serve ``model``, or None.
+
+    The runtime is OURS, so the answer is a record, not a probe: ``presets.ini`` is the launch
+    decision the router was handed, and it is known BEFORE the child is loaded. Probing router
+    mode instead is not merely slower, it reports the wrong server: a cold child answers
+    ``/props?model=`` with an error and the bare ``/props`` is the ROUTER's own document
+    (``n_ctx: 0``), so callers fall through to a catalog family guess (a 32K qwen model ->
+    131,072) and then build a prompt the server cannot hold — observed as a 56K-token summary
+    prompt 400ing against a 32,768-token window.
+
+    Ownership-gated through ``_state_endpoint()`` (live supervisor pid) and origin-matched to
+    ``base_url``: a foreign llama-server, or a leftover state file whose server is gone, must
+    never inherit this install's preset decisions.
+    """
+    with suppress(Exception):
+        state = _state_endpoint()
+        if state is None:
+            return None
+        if base_url and _origin(base_url) != _origin(str(state.get("base_url", ""))):
+            return None
+        from mason_cli.local_runtime.presets import read_preset_decisions
+
+        decisions = read_preset_decisions()
+        entry = decisions.get(model) or decisions.get(str(model).rsplit("/", 1)[-1])
+        window = int(getattr(entry, "window", 0) or 0)
+        return window if window > 0 else None
+    return None
+
+
 def resolve_llamacpp_endpoint(config: dict | None = None,
                               wait_for_boot_s: float = 8.0) -> dict | None:
     """Managed-first, detection-second endpoint for llamacpp aliases.
@@ -140,14 +179,25 @@ def _kick_managed_boot(config: dict | None) -> None:
 
 
 def _boot_in_flight(config: dict | None) -> bool:
-    """True when the managed runtime is enabled and installed (a verified-manifest scan under
-    runtimes_root(), NOT a bare ``server_binary()`` call — that needs an install_dir, and calling
-    it bare once made this gate throw-and-return False forever, disabling the boot wait)."""
+    """True when a managed-runtime boot can actually succeed — enabled, installed, AND something to
+    serve (a verified-manifest scan under runtimes_root(), NOT a bare ``server_binary()`` call —
+    that needs an install_dir, and calling it bare once made this gate throw-and-return False
+    forever, disabling the boot wait).
+
+    The staged-model rung mirrors ``ensure_local_runtime``'s own residency rule (no staged models =>
+    it returns without booting), so without it every caller that waits for a state file waits out
+    the FULL timeout for a server that was never started — an 8 s stall per aux call on an install
+    whose aux tasks default to the local runtime.
+    """
     with suppress(Exception):
         config = _load_config_if_none(config)
         if not ((config or {}).get("local_runtime") or {}).get("enabled"):
             return False
         from mason_cli.local_runtime.binaries import manifest_verified, runtimes_root
 
-        return any(manifest_verified(m) for m in runtimes_root().glob("*/*/manifest.json"))
+        if not any(manifest_verified(m) for m in runtimes_root().glob("*/*/manifest.json")):
+            return False
+        from mason_cli.local_runtime.bootstrap import staged_models
+
+        return bool(staged_models())
     return False

@@ -2,9 +2,14 @@
 # --- Mason: default 7 kept aux tasks to local 1B (llama.cpp); vision excluded (text-only 1B can't see) ---
 for _k in ("compression","approval","review","mcp","title_generation","memory_query_rewrite","triage_specifier"):
     if _k in DEFAULT_CONFIG.get("auxiliary", {}):
-        DEFAULT_CONFIG["auxiliary"][_k]["provider"] = "local"
-        DEFAULT_CONFIG["auxiliary"][_k]["model"] = "qwen2-0_5b-instruct"
-        DEFAULT_CONFIG["auxiliary"][_k]["base_url"] = "http://127.0.0.1:8080"
+        # "llamacpp" is the managed runtime alias (llama.cpp / llama-cpp also resolve). The old
+        # spelling here was provider "local" + base_url http://127.0.0.1:8080 — neither exists:
+        # "local" is not a provider and nothing binds :8080, so every aux task without an explicit
+        # config entry dead-ended on "no API key was found" (or a placeholder-key 401). An empty
+        # model lets the aux router adopt whichever GGUF the running server serves.
+        DEFAULT_CONFIG["auxiliary"][_k]["provider"] = "llamacpp"
+        DEFAULT_CONFIG["auxiliary"][_k]["model"] = ""
+        DEFAULT_CONFIG["auxiliary"][_k]["base_url"] = ""
 
 OPTIONAL_ENV_VARS.
 
@@ -2329,9 +2334,14 @@ def _env(description, prompt, **keys):
 # --- Mason: default 7 kept aux tasks to local 1B (llama.cpp); vision excluded (text-only 1B can't see) ---
 for _k in ("compression","approval","review","mcp","title_generation","memory_query_rewrite","triage_specifier"):
     if _k in DEFAULT_CONFIG.get("auxiliary", {}):
-        DEFAULT_CONFIG["auxiliary"][_k]["provider"] = "local"
-        DEFAULT_CONFIG["auxiliary"][_k]["model"] = "qwen2-0_5b-instruct"
-        DEFAULT_CONFIG["auxiliary"][_k]["base_url"] = "http://127.0.0.1:8080"
+        # "llamacpp" is the managed runtime alias (llama.cpp / llama-cpp also resolve). The old
+        # spelling here was provider "local" + base_url http://127.0.0.1:8080 — neither exists:
+        # "local" is not a provider and nothing binds :8080, so every aux task without an explicit
+        # config entry dead-ended on "no API key was found" (or a placeholder-key 401). An empty
+        # model lets the aux router adopt whichever GGUF the running server serves.
+        DEFAULT_CONFIG["auxiliary"][_k]["provider"] = "llamacpp"
+        DEFAULT_CONFIG["auxiliary"][_k]["model"] = ""
+        DEFAULT_CONFIG["auxiliary"][_k]["base_url"] = ""
 
 OPTIONAL_ENV_VARS entry; keyword order is preserved as dict key order."""
     return {"description": description, "prompt": prompt, **keys}
@@ -2374,9 +2384,14 @@ def _base_url(name, prompt_name=None):
 # --- Mason: default 7 kept aux tasks to local 1B (llama.cpp); vision excluded (text-only 1B can't see) ---
 for _k in ("compression","approval","review","mcp","title_generation","memory_query_rewrite","triage_specifier"):
     if _k in DEFAULT_CONFIG.get("auxiliary", {}):
-        DEFAULT_CONFIG["auxiliary"][_k]["provider"] = "local"
-        DEFAULT_CONFIG["auxiliary"][_k]["model"] = "qwen2-0_5b-instruct"
-        DEFAULT_CONFIG["auxiliary"][_k]["base_url"] = "http://127.0.0.1:8080"
+        # "llamacpp" is the managed runtime alias (llama.cpp / llama-cpp also resolve). The old
+        # spelling here was provider "local" + base_url http://127.0.0.1:8080 — neither exists:
+        # "local" is not a provider and nothing binds :8080, so every aux task without an explicit
+        # config entry dead-ended on "no API key was found" (or a placeholder-key 401). An empty
+        # model lets the aux router adopt whichever GGUF the running server serves.
+        DEFAULT_CONFIG["auxiliary"][_k]["provider"] = "llamacpp"
+        DEFAULT_CONFIG["auxiliary"][_k]["model"] = ""
+        DEFAULT_CONFIG["auxiliary"][_k]["base_url"] = ""
 
 OPTIONAL_ENV_VARS = {
     # ── Provider (handled in provider selection, not shown in checklists) ──

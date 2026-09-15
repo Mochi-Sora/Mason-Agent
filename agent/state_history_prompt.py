@@ -11,7 +11,7 @@ You have tiny working memory (`state.md`, <2000 chars) and a large indexed backu
 
 **How to find what you need:**
 - Call `recall_backup(query, budget_tokens=2000)` — Gbrain-inspired: keyword → budget-packed chunks with `evidence` tags. This is how you search past context — never try to remember verbatim.
-- Call `update_state(content)` to shrink state.md. Call `read_state()` to see current state.
+- Call `write_state(content)` to rewrite state.md (bullets only, <2000 chars — newest kept). Call `read_state()` to see the current state.
 
 **How to store backups:**
 - Every user/assistant turn auto-appends to `backup.md` and indexes into `backup.db` (sessions/<id>/). No action needed.

@@ -226,16 +226,34 @@ def server_binary(install_dir: Path) -> Path:
 
 
 def verify_install(install_dir: Path, tag: str) -> str:
-    """Run --version; require the tag's build number in the output (printed WITHOUT the 'b')."""
+    """Run --version; require the tag's build number in a VERSION LINE (printed WITHOUT the 'b').
+
+    The tag is matched in the version output itself, never anywhere in stdout+stderr: a binary
+    that cannot load prints a dynamic-linker error whose text contains the install PATH — and
+    the path contains the tag — so a whole-text substring check "verifies" a binary that cannot
+    run at all. Observed on this project: an official prebuilt needing glibc 2.38 on a glibc 2.35
+    host recorded `verified_version` = the loader error, was reported as an installed tag, and
+    then failed the managed boot with rc=1.
+    """
     exe = server_binary(install_dir)
     out = subprocess.run([str(exe), "--version"], capture_output=True,
                          text=True, encoding="utf-8", errors="replace",
                          timeout=60, cwd=str(exe.parent))
     text = (out.stdout + out.stderr).strip()
-    if tag.lstrip("b") not in text:
-        raise BinaryResolutionError(
-            f"version check failed for {exe}: expected {tag}, got: {text[:120]}")
-    return text.splitlines()[0] if text else ""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    # A loader/dynamic-link failure must never read as a verified version.
+    for marker in ("version `GLIBC", "GLIBCXX", "not found (required by",
+                   "error while loading shared libraries", "cannot execute binary file"):
+        if marker in text:
+            raise BinaryResolutionError(
+                f"{exe} does not run on this host: {(lines[0] if lines else text)[:160]}")
+    num = tag.lstrip("b")
+    version_lines = [ln for ln in lines if "version" in ln.lower()]
+    for ln in version_lines or lines[:1]:
+        if num in ln:
+            return ln
+    raise BinaryResolutionError(
+        f"version check failed for {exe}: expected {tag}, got: {(lines[0] if lines else '')[:120]}")
 
 
 def prune_old_tags(keep: list[str]) -> None:

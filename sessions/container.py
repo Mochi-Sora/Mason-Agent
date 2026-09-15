@@ -107,22 +107,34 @@ def append_state_bullet(session_id: str, bullet: str):
         if not existing.endswith("\n"):
             existing += "\n"
         existing += bullet + "\n"
-        # cap 2000: keep header + newest bullets (same as short_term)
+        # cap 2000: keep header + NEWEST bullets (same as short_term). The old fallback
+        # truncated the whole file from the FRONT (`existing[:1990] + "\n…\n"`), which
+        # dropped the newest bullets and kept the oldest — and since the result was still
+        # over budget, every later append re-truncated to the same bytes: state.md latched
+        # after the first overflow and silently stopped accepting bullets for the rest of
+        # the session. Truncate the oversized bullet's own tail instead, and never write a
+        # file that is still over budget.
         if len(existing) > 2000:
             lines = existing.splitlines()
             header = lines[0] if lines and lines[0].startswith("#") else f"# State — {session_id}"
-            bullets = [l for l in lines[1:] if l.strip()]
+            # "…" is the old truncation marker, not a bullet; dropping it lets an
+            # already-latched file heal on the next append.
+            bullets = [l for l in lines[1:] if l.strip() and l.strip() != "…"]
             kept = []
-            cur = header + "\n"
+            cur = len(header) + 1
             for b in reversed(bullets):
-                if len(cur) + len(b) + 1 <= 2000:
+                if cur + len(b) + 1 <= 2000:
                     kept.append(b)
+                    cur += len(b) + 1
                 else:
                     break
             kept.reverse()
+            if not kept and bullets:
+                # Newest bullet alone exceeds the budget: keep its head, mark the cut.
+                # -1 accounts for the trailing newline so the write stays within cap.
+                room = max(2000 - (len(header) + 1) - len(" …") - 1, 0)
+                kept = [bullets[-1][:room].rstrip() + " …"]
             existing = header + "\n" + "\n".join(kept) + "\n"
-            if len(existing) > 2000:
-                existing = existing[:1990] + "\n…\n"
         p_state.write_text(existing)
     except Exception:
         pass

@@ -125,14 +125,57 @@ class LlamaClient:
         # Server-side model selector (ollama-style backends REQUIRE it;
         # llama-server harmlessly ignores it). Env-overridable for cron.
         self.model = model or os.environ.get("MASON_1B_MODEL", "")
+        self.api_key = os.environ.get("MASON_1B_API_KEY", "")
         if not base_url or base_url == "http://127.0.0.1:8080":
             env_url = os.environ.get("MASON_1B_URL", "")
             if env_url:
                 self.base_url = env_url.rstrip("/")
+        # Managed runtime first: the hand-rolled :8080 spawner below needs a llama-server on
+        # PATH (a stock host has none, so this client silently returned the no-op fallback for
+        # every memory/evolution call). Mason's managed router owns a stable KEYED port instead.
+        if not os.environ.get("MASON_1B_URL"):
+            self._adopt_managed_endpoint()
         self._llama = None
         # Keep the sidecar alive as long as the framework runs — fire-and-forget
         try:
             ensure_keepalive(self.base_url)
+        except Exception:
+            pass
+
+    def _adopt_managed_endpoint(self) -> None:
+        """Point at the managed llama-server when it is up (base_url + api_key + served model id).
+
+        Router mode 400s a request without a model id, so the model is discovered from /models
+        rather than hardcoded. Best-effort: any failure leaves the :8080 defaults untouched.
+        """
+        try:
+            from mason_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
+
+            # Boot enabled (not ``wait_for_boot_s=0``): a messaging gateway never starts the managed
+            # runtime, so a memory/evolution call can be the only caller that would ever bring it up.
+            # The bounded wait is paid once — the endpoint resolves instantly afterwards — and 0 would
+            # leave this client on its :8080 default and silently degrading to the no-op fallback.
+            ep = resolve_llamacpp_endpoint()
+        except Exception:
+            ep = None
+        if not ep or not ep.get("base_url"):
+            return
+        base = str(ep["base_url"]).rstrip("/")
+        if base.endswith("/v1"):  # this client appends /v1/... itself
+            base = base[:-3]
+        self.base_url = base
+        self.api_key = str(ep.get("api_key") or "")
+        if self.model:
+            return
+        try:
+            req = urllib.request.Request(
+                f"{self.base_url}/v1/models",
+                headers={"Authorization": f"Bearer {self.api_key}"} if self.api_key else {})
+            with urllib.request.urlopen(req, timeout=5) as r:
+                data = json.loads(r.read().decode())
+            served = [str(m.get("id") or "") for m in (data.get("data") or []) if m.get("id")]
+            if served:
+                self.model = served[0]
         except Exception:
             pass
 
@@ -152,9 +195,13 @@ class LlamaClient:
             ("/v1/completions", dict(body, prompt=prompt), ("text",)),
         ):
             try:
+                headers = {"Content-Type": "application/json"}
+                if getattr(self, "api_key", ""):
+                    # The managed router requires its bearer key on every route but /health.
+                    headers["Authorization"] = f"Bearer {self.api_key}"
                 req = urllib.request.Request(
                     f"{self.base_url}{path}", data=json.dumps(payload).encode(),
-                    headers={"Content-Type": "application/json"})
+                    headers=headers)
                 with urllib.request.urlopen(req, timeout=timeout) as r:
                     j = json.loads(r.read().decode())
                 if "choices" in j and j["choices"]:

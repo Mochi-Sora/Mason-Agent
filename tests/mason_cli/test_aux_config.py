@@ -21,6 +21,23 @@ from mason_cli.main_provider_setup import _AUX_TASKS, _DELEGATION_TASK_KEY, _del
 # ── Default config ──────────────────────────────────────────────────────────
 
 
+def test_local_default_names_the_managed_runtime_alias_and_no_port():
+    """The local-1B default override must name a REAL provider and never a hardcoded port.
+
+    Regression: the override wrote provider "local" + base_url http://127.0.0.1:8080. Neither
+    existed — "local" is not a provider alias ("llamacpp" / "llama.cpp" / "llama-cpp" are) and the
+    managed server binds a stable keyed port, never :8080 — so every aux task without an explicit
+    config entry dead-ended on "no API key was found" instead of reaching the local model."""
+    from mason_cli.config_defaults import DEFAULT_CONFIG
+
+    for task in ("compression", "approval", "review", "mcp", "title_generation",
+                 "memory_query_rewrite", "triage_specifier"):
+        entry = DEFAULT_CONFIG["auxiliary"][task]
+        assert entry["provider"] == "llamacpp", task
+        assert entry["base_url"] == "", task     # resolve the managed endpoint at call time
+        assert entry["model"] == "", task        # adopt whichever GGUF the server serves
+
+
 def test_title_generation_present_in_default_config():
     """`title_generation` task must be defined in DEFAULT_CONFIG.
 
@@ -32,7 +49,10 @@ def test_title_generation_present_in_default_config():
     assert "title_generation" in DEFAULT_CONFIG["auxiliary"]
     tg = DEFAULT_CONFIG["auxiliary"]["title_generation"]
     assert tg["enabled"] is True
-    assert tg["provider"] == "auto"
+    # This fork deliberately defaults the kept aux tasks to the managed local runtime rather than
+    # "auto" (the override at the end of mason_cli/config_defaults.py): a fresh install must route
+    # side tasks to the local GGUF, not to the cloud main model.
+    assert tg["provider"] == "llamacpp"
     assert tg["model"] == ""
     assert tg["prefer_fast_model"] is False
     assert tg["timeout"] > 0

@@ -58,6 +58,10 @@ _HEURISTICS: List[tuple] = [
     (r"wake|hey mason|listen", []),
     (r"schedul|cron|nightly|remind|daily", ["cronjob_manage"]),
     (r"session|backup|earlier|before|yesterday", ["recall_backup", "session_search"]),
+    # State history trio: the state-first design assumes these are reachable, but
+    # nothing else pre-injects write_state (it is absent from the deferred catalog,
+    # so a session that never used it cannot discover it either).
+    (r"state\.md|state history|working memory|write_state|read_state", ["read_state", "write_state", "recall_backup"]),
     (r"skill", ["skills_list", "skill_view"]),
     (r"delegat|parallel|subagent|background", ["delegate_task"]),
     (r"todo|task list|plan", ["todo_list"]),
