@@ -6,7 +6,9 @@ on:
     - cron: "0 6,18 * * *"
   workflow_dispatch: # Manual trigger
   push:
-    branches: [MasonAgent]
+    # Glob patterns only -- no expressions in `on:`; the trunk gate is on
+    # `build-index` below.
+    branches: ['**']
     paths:
       - "scripts/build_skills_index.py"
       - ".github/workflows/skills-index.yml"
@@ -17,8 +19,10 @@ permissions:
 
 jobs:
   build-index:
-    # Only run on the upstream repository, not on forks
-    if: github.repository == 'NousResearch/mason-agent'
+    # Only run on the upstream repository, not on forks -- and, on push, only
+    # from the trunk: `branches: [<name>]` can no longer express that, so the
+    # default branch is resolved here.
+    if: github.repository == 'NousResearch/mason-agent' && (github.event_name != 'push' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: trusted-automation

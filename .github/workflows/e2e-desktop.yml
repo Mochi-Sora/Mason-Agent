@@ -97,7 +97,7 @@ jobs:
           path: apps/desktop/e2e/*-snapshots
           key: visual-baselines-${{ github.ref_name }}
           restore-keys: |
-            visual-baselines-MasonAgent
+            visual-baselines-${{ github.event.repository.default_branch }}
 
       # ── Run Playwright E2E under xvfb ─────────────────────────────────
       # xvfb runs at a fixed 1280x1024 screen so the 1220x800 Electron
@@ -108,8 +108,8 @@ jobs:
       - name: Run Playwright E2E tests
         working-directory: apps/desktop
         run: |
-          if [ "${{ github.ref_name }}" = "MasonAgent" ]; then
-            echo "On MasonAgent — generating/updating baseline screenshots"
+          if [ "${{ github.ref_name }}" = "${{ github.event.repository.default_branch }}" ]; then
+            echo "On the default branch — generating/updating baseline screenshots"
             npm run build && xvfb-run -a --server-args="-screen 0 1280x1024x24" \
               npx playwright test --reporter=list --update-snapshots
           else
@@ -126,11 +126,11 @@ jobs:
 
       # ── Save updated baselines to cache (MasonAgent only) ─────────────
       - name: Save updated baselines to cache
-        if: github.ref_name == 'MasonAgent' && always()
+        if: github.ref_name == github.event.repository.default_branch && always()
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: apps/desktop/e2e/*-snapshots
-          key: visual-baselines-MasonAgent
+          key: visual-baselines-${{ github.event.repository.default_branch }}
 
       # ── Upload Playwright report (HTML + traces) ──────────────────────
       - name: Upload Playwright report
@@ -157,7 +157,7 @@ jobs:
       # ── Upload just the visual diffs (small, fast to review) ──────────
       - name: Upload visual diffs
         id: upload-diffs
-        if: always() && github.ref_name != 'MasonAgent'
+        if: always() && github.ref_name != github.event.repository.default_branch
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: visual-diffs-${{ github.sha }}
@@ -204,7 +204,7 @@ jobs:
       # artifact. It turns selected images into GitHub attachment URLs; it
       # never checks out or runs this PR's code.
       - name: Upload inline E2E evidence
-        if: always() && github.ref_name != 'MasonAgent'
+        if: always() && github.ref_name != github.event.repository.default_branch
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: e2e-evidence-${{ github.sha }}
@@ -263,7 +263,7 @@ jobs:
             echo "- [visual-diffs]($DIFFS_URL) — just the diffed screenshots (small, fast to review)"
           fi
           echo ""
-          echo "**To update baselines:** merge to MasonAgent (baselines auto-update on MasonAgent runs) or run \`npx playwright test --update-snapshots\` locally."
+          echo "**To update baselines:** merge to the default branch (baselines auto-update on runs there) or run \`npx playwright test --update-snapshots\` locally."
 
           # Also parse the JSON report for pass/fail counts
           if [ -f playwright-report/results.json ]; then

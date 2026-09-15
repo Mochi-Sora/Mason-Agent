@@ -15,7 +15,7 @@ name: Install & Update E2E (reusable)
 #       uses: ./.github/workflows/install-e2e-run.yml
 #       with:
 #         route: update
-#         install-ref: refs/heads/MasonAgent
+#         install-ref: refs/heads/<default-branch>
 
 on:
   workflow_call:
@@ -25,10 +25,13 @@ on:
         required: true
         type: string
       install-ref:
-        description: 'What to install before updating: a branch, a tag (v2026.7.7), or a SHA reachable from MasonAgent.'
+        description: 'What to install before updating: a branch, a tag (v2026.7.7), or a SHA reachable from the repo default branch.'
         required: false
         type: string
-        default: refs/heads/MasonAgent
+        # Deliberately empty: a `workflow_call` input default cannot be an
+        # expression and the trunk's name is not a static fact. Consumers
+        # below fall back to the repository's default branch.
+        default: ''
       runner:
         description: 'Runner label.'
         required: false
@@ -45,7 +48,7 @@ permissions:
 
 jobs:
   e2e:
-    name: ${{ inputs.route }} from ${{ inputs.install-ref }}
+    name: ${{ inputs.route }} from ${{ inputs.install-ref || format('refs/heads/{0}', github.event.repository.default_branch) }}
     runs-on: ${{ inputs.runner }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
 
@@ -86,7 +89,7 @@ jobs:
           set -euo pipefail
           tests/install/install-update-e2e.sh \
             --route '${{ inputs.route }}' \
-            --install-ref '${{ inputs.install-ref }}'
+            --install-ref '${{ inputs.install-ref || format('refs/heads/{0}', github.event.repository.default_branch) }}'
         env:
           # Outside the workspace on purpose: the script creates this directory
           # up front, and an untracked dir inside the repo makes the worktree
@@ -96,7 +99,7 @@ jobs:
           MASON_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
 
       # Artifact names cannot contain '/', and install-ref may be a full ref
-      # like refs/heads/MasonAgent. GitHub Actions expressions have no string-replace
+      # like refs/heads/<default-branch>. GitHub Actions expressions have no string-replace
       # function, so build the safe name here. Runs even on failure -- that is
       # exactly when the logs are wanted.
       - name: Build artifact name
@@ -104,7 +107,7 @@ jobs:
         id: artifact
         run: |
           set -euo pipefail
-          safe_ref='${{ inputs.install-ref }}'
+          safe_ref='${{ inputs.install-ref || format('refs/heads/{0}', github.event.repository.default_branch) }}'
           safe_ref="${safe_ref//\//-}"
           echo "name=install-e2e-${{ inputs.route }}-${safe_ref}" >> "$GITHUB_OUTPUT"
 

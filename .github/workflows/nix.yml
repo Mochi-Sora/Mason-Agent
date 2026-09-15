@@ -13,7 +13,9 @@ name: Nix flake check
 on:
   pull_request:
   push:
-    branches: [MasonAgent]
+    # Glob patterns only -- no expressions in `on:`; the trunk gate is on the
+    # `detect` job below.
+    branches: ['**']
 
 permissions:
   contents: read
@@ -33,6 +35,9 @@ jobs:
   # flake inputs. On push the classifier fails open and every lane is true.
   detect:
     name: Detect affected areas
+    # Trunk gate for push events: `flake-check` needs this job, so a
+    # non-trunk push skips the nix lane too.
+    if: github.event_name != 'push' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:

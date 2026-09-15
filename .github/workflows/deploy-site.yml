@@ -4,7 +4,9 @@ on:
   release:
     types: [published]
   push:
-    branches: [MasonAgent]
+    # Glob patterns only -- no expressions in `on:`. Trunk-only deploys are
+    # enforced by the job `if:` below.
+    branches: ['**']
     paths:
       - 'website/**'
       - 'skills/**'
@@ -47,7 +49,10 @@ jobs:
         run: curl -fsS --retry 3 --retry-delay 10 -X POST "${{ secrets.VERCEL_DEPLOY_HOOK }}"
 
   deploy-docs:
-    if: github.repository == 'NousResearch/mason-agent'
+    # Upstream only, and on push only from the trunk: `branches: [<name>]`
+    # can no longer express that (see the `on:` comment), so the default
+    # branch is resolved here.
+    if: github.repository == 'NousResearch/mason-agent' && (github.event_name != 'push' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment:
