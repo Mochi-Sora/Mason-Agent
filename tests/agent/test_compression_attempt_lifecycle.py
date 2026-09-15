@@ -19,6 +19,7 @@ collapsed lean compaction to one auxiliary request per attempt:
 
 from __future__ import annotations
 
+import concurrent.futures
 import copy
 import os
 import threading
@@ -32,6 +33,7 @@ from agent.auxiliary_client import AuxiliaryExplicitCancellation
 from agent.conversation_compression import (
     CompressionCommitFence,
     _claim_compressor_attempt,
+    _join_cancelled_worker,
     compress_context,
     compression_blocked_transiently,
     run_compress_context_with_progress_timeout,
@@ -88,20 +90,27 @@ class TestWorkerTeardownOnCeiling:
                 fence.touch_progress()
                 time.sleep(0.01)
             # Cooperative-but-not-instant exit: the unwind after seeing the
-            # poison takes real time (rollback, telemetry). Long enough that
-            # a host WITHOUT the bounded-grace join returns first; far
-            # inside the 5s grace for a host WITH it.
-            time.sleep(0.08)
+            # poison takes real time (rollback, telemetry). It must be long enough that the
+            # host's OWN post-ceiling path (~ms of bookkeeping, but starvable on a loaded box)
+            # can never outlast it: otherwise removing `_join_cancelled_worker` still passes,
+            # because the host's wait loop adopts the worker's own late return instead.
+            time.sleep(0.5)
             worker_done.set()
             return (original, "late")
 
         fence = CompressionCommitFence()
+        # Budgets leave the join room to reap the 0.5s unwind above: the join's effective grace is
+        # min(_CANCELLED_WORKER_TEARDOWN_GRACE_SECONDS, ceiling) == the ceiling, so the ceiling must be
+        # both (a) comfortably larger than the unwind, and (b) long enough that the SHARED
+        # compress-timeout pool actually starts the job — a job that starts after the deadline is
+        # refused pre-start by _fence_gated_worker, and then worker_done is unset for a reason this
+        # test does not mean to assert.
         msgs, prompt = run_compress_context_with_progress_timeout(
             worker=cooperative_worker,
             messages=original,
             system_prompt_fallback="fallback",
-            idle_timeout_seconds=0.1,
-            total_ceiling_seconds=0.2,
+            idle_timeout_seconds=2.0,
+            total_ceiling_seconds=2.0,
             fence=fence,
             stall_fallback=False,
         )
@@ -127,11 +136,13 @@ class TestWorkerTeardownOnCeiling:
         original = [{"role": "user", "content": "keep"}]
         release = threading.Event()
         worker_finished = threading.Event()
+        started = threading.Event()
         lock_released: list[float] = []
 
         def stuck_worker(fence: CompressionCommitFence):
             # Continuous progress so only the TOTAL ceiling can expire
             # (the #97488 'last progress 0.0s ago' shape).
+            started.set()
             while not release.wait(timeout=0.02):
                 fence.touch_progress()
             worker_finished.set()
@@ -146,16 +157,21 @@ class TestWorkerTeardownOnCeiling:
         fence.register_cancelled_lock_release(
             lambda: lock_released.append(time.monotonic())
         )
+        # Budgets match the cooperative test: the join's grace is
+        # min(_CANCELLED_WORKER_TEARDOWN_GRACE_SECONDS, ceiling) == the ceiling, so the ceiling
+        # must leave room for the shared pool to START the job (a pre-start refusal would make
+        # "worker still alive" true for the wrong reason, or release the lease below).
         msgs, prompt = run_compress_context_with_progress_timeout(
             worker=stuck_worker,
             messages=original,
             system_prompt_fallback="fallback",
-            idle_timeout_seconds=0.1,
-            total_ceiling_seconds=0.3,
+            idle_timeout_seconds=1.0,
+            total_ceiling_seconds=1.0,
             fence=fence,
             stall_fallback=False,
         )
-        # Precondition: the worker is genuinely still running.
+        # Precondition: the job actually started, and the worker is still running.
+        assert started.wait(timeout=5), "compression worker never started — test did not exercise an orphan"
         assert not worker_finished.is_set()
         assert msgs is original and prompt == "fallback"
         # Total-ceiling path: lease retained until the worker exits, so no
@@ -168,6 +184,44 @@ class TestWorkerTeardownOnCeiling:
         assert worker_finished.wait(timeout=2)
         # Late result was fence-poisoned, never adopted.
         assert msgs == [{"role": "user", "content": "keep"}]
+
+
+class TestCancelledWorkerJoinClassification:
+    """The teardown join must read "future already settled" as "thread gone".
+
+    A job admitted before the deadline but STARTED after it is refused pre-start by
+    ``_fence_gated_worker``, which raises ``concurrent.futures.TimeoutError`` into the future —
+    the same exception class the join raises when its grace expires. A future that is already
+    settled is not an orphan: reporting one logs a phantom "did not exit within grace" warning and
+    retains the durable lease for an attempt that never acquired it (its release hook can never
+    fire). Observed as a flaky
+    ``TestWorkerTeardownOnCeiling::test_cooperative_worker_joined_within_grace`` on a loaded box.
+    """
+
+    def test_settled_pre_start_refusal_is_not_an_orphan(self):
+        future: concurrent.futures.Future = concurrent.futures.Future()
+        future.set_exception(
+            concurrent.futures.TimeoutError("compression deadline expired before worker start")
+        )
+        assert _join_cancelled_worker(future, 0.2) is True, (
+            "a worker refused before start is a dead thread, not a live provider call"
+        )
+
+    def test_cancelled_before_start_is_not_an_orphan(self):
+        future: concurrent.futures.Future = concurrent.futures.Future()
+        assert future.cancel()
+        assert _join_cancelled_worker(future, 0.2) is True
+
+    def test_settled_result_is_joined(self):
+        future: concurrent.futures.Future = concurrent.futures.Future()
+        future.set_result(([{"role": "user", "content": "keep"}], "late"))
+        assert _join_cancelled_worker(future, 0.2) is True
+
+    def test_pending_worker_is_still_an_orphan(self):
+        future: concurrent.futures.Future = concurrent.futures.Future()
+        assert _join_cancelled_worker(future, 0.05) is False, (
+            "a worker still running after the grace must be reported as an orphan"
+        )
 
 
 class TestDurableAttemptBackoff:

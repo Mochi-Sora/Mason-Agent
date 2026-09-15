@@ -604,14 +604,29 @@ _CANCELLED_WORKER_TEARDOWN_GRACE_SECONDS = 5.0
 def _join_cancelled_worker(future: Any, grace_seconds: float) -> bool:
     """Best-effort bounded join of a fence-cancelled compression worker.
     Returns True when the future settled within ``grace_seconds`` (thread provably exited); False for a
-    still-running worker, which the caller must treat as an orphan behind the poison fence."""
+    still-running worker, which the caller must treat as an orphan behind the poison fence.
+
+    A future that has ALREADY settled counts as exited even when it carries an exception: a job that starts
+    after its deadline is refused pre-start by ``_fence_gated_worker`` with its own ``TimeoutError``, which is
+    a dead thread, not a live provider call. Treating that as a timeout-of-the-join would report a phantom
+    orphan and retain the durable lease for an attempt that never acquired it (and whose release hook can
+    therefore never fire). Only a still-pending future is an orphan.
+    """
     grace = 0.0
     with contextlib.suppress(TypeError, ValueError):
         grace = max(float(grace_seconds), 0.0)
+    if future.done():
+        _log_settled_worker_exception(future)
+        return True
     try:
         future.result(timeout=grace)
         return True
     except concurrent.futures.TimeoutError:
+        # The join timed out — UNLESS the settle raced in during the wait, in which case the
+        # worker is already gone and its own TimeoutError is not an orphan signal.
+        if future.done():
+            _log_settled_worker_exception(future)
+            return True
         return False
     except concurrent.futures.CancelledError:
         # Never started; nothing can be in flight.
@@ -620,6 +635,16 @@ def _join_cancelled_worker(future: Any, grace_seconds: float) -> bool:
         # The host already chose the fallback result; the fence keeps the failed attempt from touching state.
         logger.debug("cancelled compression worker exited with an exception", exc_info=True)
         return True
+
+
+def _log_settled_worker_exception(future: Any) -> None:
+    """Report the exception a settled cancelled worker carries; never raises."""
+    try:
+        exc = future.exception()
+    except BaseException:  # cancelled before start: nothing to report
+        return
+    if exc is not None:
+        logger.debug("cancelled compression worker settled before the join: %r", exc)
 
 
 # The executor queue is unbounded and a queued job would run stale, so admission is capped at the worker

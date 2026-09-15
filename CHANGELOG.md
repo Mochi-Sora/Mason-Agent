@@ -89,3 +89,18 @@ boot-capability) misreported state in ways that produced malformed requests or s
 - Updated: `tests/mason_cli/test_aux_config.py`, `tests/mason_cli/test_local_runtime.py`.
 - Added: `tests/agent/test_auxiliary_llamacpp_managed_runtime.py`,
   `tests/agent/test_managed_runtime_context_window.py`.
+
+### agent/conversation_compression.py — a settled cancelled worker is not an orphan
+- **Bug:** `_join_cancelled_worker` read *any* `concurrent.futures.TimeoutError` as "the join's grace
+  expired, the thread is still running". A job admitted before the ceiling but STARTED after it is
+  refused pre-start by `_fence_gated_worker` — which raises that exact exception class into the
+  future. On a loaded host the shared compress-timeout pool starts the job late, so the join met a
+  settled future, reported a phantom orphan, and retained the durable lease for an attempt that never
+  acquired it (whose release hook can therefore never fire).
+- **Now:** a future that is already `done()` is a dead thread — treated as joined, with any exception
+  it carries logged at debug. The `TimeoutError` branch re-checks `done()` for a settle that races in
+  during the wait. Only a still-pending future is an orphan.
+- **Tests:** `tests/agent/test_compression_attempt_lifecycle.py` — new
+  `TestCancelledWorkerJoinClassification` (4 cases) pins the classification directly, and the two
+  ceiling tests move to budgets (2.0s / 1.0s) that leave the shared pool room to actually START the
+  job, with the cooperative test's unwind raised to 0.5s so removing the join still fails it.
